@@ -46,17 +46,26 @@ at::Tensor rst_forward(const at::Tensor &edge_index_tensor,
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(edge_weight_cpu.scalar_type(), "forward_kernel", ([&] {
         scalar_t *edge_weight = edge_weight_cpu.contiguous().data<scalar_t>();
 
-        // Loop for batch
-        std::thread pids[batch_size];
-        for (unsigned i = 0; i < batch_size; i++) {
-            auto edge_index_iter = edge_index + i * edge_count * 2;
-            auto edge_weight_iter = edge_weight + i * edge_count;
-            auto edge_out_iter = edge_out + i * (vertex_count - 1) * 2;
-            pids[i] = std::thread(forward_kernel_template<scalar_t>, edge_index_iter, edge_weight_iter, edge_out_iter, vertex_count, edge_count);
-        }
+        // Use vector instead of C-style array
+        std::vector<std::thread> pids;
+        pids.reserve(batch_size);
 
         for (unsigned i = 0; i < batch_size; i++) {
-            pids[i].join();
+            auto edge_index_iter  = edge_index + i * edge_count * 2;
+            auto edge_weight_iter = edge_weight + i * edge_count;
+            auto edge_out_iter    = edge_out + i * (vertex_count - 1) * 2;
+            pids.emplace_back(
+                forward_kernel_template<scalar_t>,
+                edge_index_iter,
+                edge_weight_iter,
+                edge_out_iter,
+                vertex_count,
+                edge_count
+            );
+        }
+
+        for (auto &t : pids) {
+            t.join();
         }
     }));
 

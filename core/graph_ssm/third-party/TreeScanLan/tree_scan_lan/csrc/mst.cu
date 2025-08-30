@@ -104,17 +104,22 @@ at::Tensor mst_forward(
     // Loop for batch
     AT_DISPATCH_FLOATING_TYPES_AND_HALF(edge_weight_cpu.scalar_type(), "mst_forward", ([&] {
         scalar_t * edge_weight = edge_weight_cpu.contiguous().data<scalar_t>(); 
-        std::thread pids[batch_size];
-        for (unsigned i = 0; i < batch_size; i++){
+        std::vector<std::thread> pids;
+        pids.reserve(batch_size);
+
+        for (unsigned i = 0; i < batch_size; i++) {
             auto edge_index_iter  = edge_index + i * edge_count * 2;
             auto edge_weight_iter = edge_weight + i * edge_count;
             auto edge_out_iter    = edge_out + i * (vertex_count - 1) * 2;
-            pids[i] = std::thread(forward_kernel<scalar_t>, edge_index_iter, edge_weight_iter, edge_out_iter, vertex_count, edge_count);
+
+            pids.emplace_back(forward_kernel<scalar_t>, 
+                            edge_index_iter, edge_weight_iter, edge_out_iter, 
+                            vertex_count, edge_count);
         }
-        
-    for (unsigned i = 0; i < batch_size; i++){
-        pids[i].join();
-    }
+
+        for (auto &t : pids) {
+            t.join();
+        }
     }));
     auto edge_out_tensor = edge_out_cpu.to(edge_index_tensor.device());
     

@@ -1,0 +1,5 @@
+import tonic
+
+trainset = tonic.datasets.ThreeET_Eyetracking(save_to="./data", split='train')
+
+events, targets = next(iter(trainset))

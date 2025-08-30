@@ -213,11 +213,14 @@ class GraphSSMModel(nn.Module):
 if __name__ == "__main__":
     run = wandb.init(project="eye_tracking_lpw")
 
-    DATA_DIR_ROOT = "/data/scratch/nzubic/LongSeqFlow/event_based/datasets"
+    DATA_DIR_ROOT = r"data\ThreeET_Eyetracking"
 
+    current_directory = os.getcwd()
+    print("Current Working Directory:", current_directory)
+    
     data_dir_train = os.path.join(DATA_DIR_ROOT, "pupil_st/data_ts_pro/train/")
     data_dir_val = os.path.join(DATA_DIR_ROOT, "pupil_st/data_ts_pro/val/")
-    target_dir = os.path.join(DATA_DIR_ROOT, "pupil_st/label")
+    target_dir = os.path.join(DATA_DIR_ROOT, "labels")
 
     # Load filenames from the provided lists
     train_filenames = load_filenames("eye_tracking_lpw/train_files.txt")
