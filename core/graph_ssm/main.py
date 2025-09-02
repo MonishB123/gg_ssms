@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 import math
+from .tree_utils import prune_tree_by_weight
 
 
 class _MST(Function):
@@ -163,6 +164,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
             tree_weight = cosine_distance(data1, data2)
 
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
+            
+            # Prune edges with weights below threshold
+            pruning_threshold = 0.5  # You can adjust this threshold or make it a model parameter
+            tree = prune_tree_by_weight(tree, tree_weight, pruning_threshold)
+            
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
         else:
             sorted_index2, sorted_parent2, sorted_child2 = (
