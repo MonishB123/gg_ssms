@@ -1,3 +1,18 @@
+# Container Instructions
+After starting pod: 
+```bash 
+mv /workspace/code.py /workspace/my_code.py
+chmod +x run_with_rebuild.sh
+./run_with_rebuild.sh
+```
+Then run to start training:
+```bash
+python eye_tracking_lpw/graph_ssm_train.py
+```
+save files to /data
+
+
+
 # [CVPR'25 Highlight] Graph-Generating State Space Models (GG-SSMs)
 **Official PyTorch Implementation of our [CVPR 2025 Highlight paper](https://arxiv.org/abs/2412.12423).**  
 **Authors:** Nikola Zubić, Davide Scaramuzza
