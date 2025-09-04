@@ -543,9 +543,9 @@ if __name__ == "__main__":
 
     # update if you have a new config file
     config_path = "core/convolutional_graph_ssm/classification/config/convolutional_graph_ssm_b_1k_224.yaml"
-    weights_path = "core/convolutional_graph_ssm/classification/weights/convolutional_graph_ssm_base.pth"  # If you have pretrained weights, specify here
+    weights_path = "core/convolutional_graph_ssm/classification/weights/convolutional_graph_ssm_small.pth"  # If you have pretrained weights, specify here
 
-    img_path = "core/convolutional_graph_ssm/classification/cat.jpeg"  # Replace with your input image
+    img_path = "core/convolutional_graph_ssm/classification/james-person.jpg"  # Replace with your input image
     out_dir = "core/convolutional_graph_ssm/classification/output_folder"
 
     # 1. Load config (optional if you have a real config file)
