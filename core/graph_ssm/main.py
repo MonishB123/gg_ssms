@@ -176,10 +176,10 @@ def tree_scanning_algorithm(self, input_states, context_len):
             print(tree.squeeze(0))  # Remove batch dimension for clearer printing
             
             # Prune edges with weights below threshold
-            pruning_threshold = 0.5  # You can adjust this threshold or make it a model parameter
+            pruning_threshold = 0.7  # You can adjust this threshold or make it a model parameter
             tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
             
-            print("\nPruned tree (threshold=0.5):")
+            print(f"\nPruned tree (threshold={pruning_threshold}):")
             print(tree.squeeze(0))
             
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
