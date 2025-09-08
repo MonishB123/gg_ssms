@@ -28,7 +28,7 @@ pretrained = False
 test_one = True
 height = N = 60  # input y size
 width = M = 80  # input x size
-batch_size = 16
+batch_size = 8
 seq = 40
 stride = 1
 stride_val = 40
@@ -213,7 +213,7 @@ class GraphSSMModel(nn.Module):
 if __name__ == "__main__":
     run = wandb.init(project="eye_tracking_lpw")
 
-    DATA_DIR_ROOT = r"data\ThreeET_Eyetracking"
+    DATA_DIR_ROOT = r"data/ThreeET_Eyetracking"
 
     current_directory = os.getcwd()
     print("Current Working Directory:", current_directory)
@@ -227,8 +227,8 @@ if __name__ == "__main__":
     val_filenames = load_filenames("eye_tracking_lpw/val_files.txt")
 
     # Get the data file paths and target file paths
-    data_train = [os.path.join(data_dir_train, f + ".h5") for f in train_filenames]
-    target_train = [os.path.join(target_dir, f + ".txt") for f in train_filenames]
+    data_train = [os.path.join(data_dir_train, f + ".h5") for f in train_filenames[0:1]]
+    target_train = [os.path.join(target_dir, f + ".txt") for f in train_filenames[0:1]]
 
     data_val = [os.path.join(data_dir_val, f + ".h5") for f in val_filenames]
     target_val = [os.path.join(target_dir, f + ".txt") for f in val_filenames]

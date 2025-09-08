@@ -39,7 +39,12 @@ def get_extensions():
             ],
         }
     else:
-        raise NotImplementedError("Cuda is not available.")
+        # Commented out exception so it can pass containerization
+        #raise NotImplementedError("Cuda is not available.")
+        from setuptools import Extension
+        extension = Extension
+        extra_compile_args = {"cxx": ["-O3"]}
+        define_macros = []
 
     sources = [os.path.join(extensions_dir, s) for s in sources]
     include_dirs = [extensions_dir]
