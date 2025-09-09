@@ -33,7 +33,7 @@ seq = 40
 stride = 1
 stride_val = 40
 chunk_size = 500
-num_epochs = 100
+num_epochs = 10
 
 # Generate ID randomly for each run (1-1m)
 id_run = np.random.randint(1, 1e6)
