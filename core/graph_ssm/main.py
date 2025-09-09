@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 import math
-from tree_utils import prune_tree_by_weight
+from .tree_utils import prune_tree_by_weight
 
 
 class _MST(Function):
