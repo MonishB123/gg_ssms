@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange, repeat
 import math
+from tree_utils import prune_tree_by_weight
 
 
 class _MST(Function):
@@ -162,7 +163,25 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # import pdb;pdb.set_trace()
             tree_weight = cosine_distance(data1, data2)
 
+            # Print the pairs and their weights before MST
+            print("\nInput pairs to MST:")
+            print(pairs)
+            print("\nInput weights to MST:")
+            print(tree_weight)
+
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
+            
+            # Print the resulting MST
+            print("\nResulting MST edges:")
+            print(tree.squeeze(0))  # Remove batch dimension for clearer printing
+            
+            # Prune edges with weights below threshold
+            pruning_threshold = 0.7  # You can adjust this threshold or make it a model parameter
+            tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
+            
+            print(f"\nPruned tree (threshold={pruning_threshold}):")
+            print(tree.squeeze(0))
+            
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
         else:
             sorted_index2, sorted_parent2, sorted_child2 = (
@@ -308,18 +327,26 @@ if __name__ == "__main__":
     # Example hyperparameters
     d_model = 16
     seq_len = 12
-    batch_size = 2
+    batch_size = 1  # Set to 1 for clearer visualization
     context_len = 4  # Or pass in a list, e.g., [4, 4] for each sample
 
+    print(f"\nRunning with parameters:")
+    print(f"d_model: {d_model}")
+    print(f"seq_len: {seq_len}")
+    print(f"batch_size: {batch_size}")
+    print(f"context_len: {context_len}")
+
     # Create random input tensor
+    torch.manual_seed(42)  # For reproducibility
     x = torch.randn(batch_size, seq_len, d_model)
 
     # Instantiate the GraphSSM layer
     model = GraphSSM(d_model=d_model)
 
     # Forward pass
+    print("\nRunning forward pass...")
     output = model(x, context_len)
 
-    print("Input shape:", x.shape)  # (B, L, d_model)
+    print("\nInput shape:", x.shape)  # (B, L, d_model)
     print("Output shape:", output.shape)  # (B, L, d_model)
     # Now 'output' contains the contextualized representation
