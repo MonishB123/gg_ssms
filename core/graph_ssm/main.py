@@ -84,6 +84,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
     batch_size, seq_len, _ = input_states.shape
     dtype = input_states.dtype
     device = input_states.device
+    
+    # Add a static counter to track iterations
+    if not hasattr(tree_scanning_algorithm, 'iteration_count'):
+        tree_scanning_algorithm.iteration_count = 0
+    tree_scanning_algorithm.iteration_count += 1
     # 1. Gated MLP's linear projection
     projected_states = self.in_proj(input_states).transpose(
         1, 2
@@ -163,24 +168,27 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # import pdb;pdb.set_trace()
             tree_weight = cosine_distance(data1, data2)
 
-            # Print the pairs and their weights before MST
-            print("\nInput pairs to MST:")
-            print(pairs)
-            print("\nInput weights to MST:")
-            print(tree_weight)
+            # Print the pairs and their weights before MST (only for first iteration)
+            if tree_scanning_algorithm.iteration_count == 1:
+                print("\nInput pairs to MST:")
+                print(pairs)
+                print("\nInput weights to MST:")
+                print(tree_weight)
 
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
-            # Print the resulting MST
-            print("\nResulting MST edges:")
-            print(tree.squeeze(0))  # Remove batch dimension for clearer printing
+            # Print the resulting MST (only for first iteration)
+            if tree_scanning_algorithm.iteration_count == 1:
+                print("\nResulting MST edges:")
+                print(tree.squeeze(0))  # Remove batch dimension for clearer printing
             
             # Prune edges with weights below threshold
             pruning_threshold = 0.3  # Adjusted threshold - most weights are around 0.368
             tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
             
-            print(f"\nPruned tree (threshold={pruning_threshold}):")
-            print(tree.squeeze(0))
+            if tree_scanning_algorithm.iteration_count == 1:
+                print(f"\nPruned tree (threshold={pruning_threshold}):")
+                print(tree.squeeze(0))
             
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
         else:
