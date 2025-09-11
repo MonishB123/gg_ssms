@@ -28,7 +28,7 @@ def _safe_draw(edges_tensor: torch.Tensor, file_name: str):
     pos = nx.spring_layout(G, seed=0)
 
     plt.figure(figsize=(6, 6))
-    nx.draw(G, pos, with_labels=True, node_size=200, font_size=8)
+    nx.draw(G, pos, with_labels=True, node_size=100, font_size=8)
     plt.tight_layout()
 
     import os
