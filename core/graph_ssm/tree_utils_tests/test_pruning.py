@@ -8,7 +8,7 @@ from core.graph_ssm.tree_utils_tests.pruning_test_cases import (
 )
 
 
-def _safe_draw(edges_tensor: torch.Tensor, file_name: str):
+def _safe_draw(edges_tensor: torch.Tensor, case_dir: str, file_name: str):
     try:
         import matplotlib
         matplotlib.use("Agg")  # non-interactive backend
@@ -33,7 +33,7 @@ def _safe_draw(edges_tensor: torch.Tensor, file_name: str):
 
     import os
     base_dir = os.path.dirname(__file__)
-    out_dir = os.path.join(base_dir, "outputs")
+    out_dir = os.path.join(base_dir, "outputs", case_dir)
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, file_name)
     plt.savefig(out_path, dpi=200)
@@ -53,8 +53,10 @@ def test_pruning_runs(case_fn):
     assert isinstance(pruned, torch.Tensor)
     assert pruned.dim() == 3 and pruned.size(-1) == 2
 
-    # Draw original and pruned for the first batch element
+    # Draw original and pruned for all batch elements
     case_name = getattr(case_fn, "__name__", "case")
-    _safe_draw(tree[0], f"{case_name}_original.png")
-    _safe_draw(pruned[0], f"{case_name}_pruned.png")
+    B = tree.shape[0]
+    for b in range(B):
+        _safe_draw(tree[b], case_name, f"b{b:02d}_original.png")
+        _safe_draw(pruned[b], case_name, f"b{b:02d}_pruned.png")
 
