@@ -71,6 +71,23 @@ def cosine_distance(fm_ref, fm_tar):
     return torch.exp(weight)  # with - is for min tree
 
 
+def gaussian_distance(fm_ref, fm_tar, sigma=1.5):
+    diff = fm_ref - fm_tar
+    weight = (diff * diff).sum(dim=-1) / (2 * sigma * sigma)
+    return torch.exp(-weight)  # with - is for max tree
+
+def euclidean_distance(fm_ref, fm_tar):
+    diff = fm_ref - fm_tar
+    weight = torch.sqrt((diff * diff).sum(dim=-1) + 1e-8)
+    return torch.exp(-weight)  # with - is for max tree
+
+def manhattan_distance(fm_ref, fm_tar):
+    diff = fm_ref - fm_tar
+    weight = torch.abs(diff).sum(dim=-1)
+    return torch.exp(-weight)  # with - is for max tree
+
+
+
 def batch_index_opr(data, index):
     with torch.no_grad():
         channel = data.shape[1]
