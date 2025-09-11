@@ -35,16 +35,14 @@ def prune_tree_by_weight(
     original_pairs: torch.Tensor,
     weights: torch.Tensor,
     threshold: float,
-    leaf_only: bool = False,
 ):
-    """Prune edges with weight <= threshold.
-       If leaf_only=True, only prune edges that are leaves AND <= threshold (single pass).
+    """Prune edges with weight <= threshold, leaf-only (single pass).
+       Only prune edges that are leaves AND <= threshold.
     Args:
         tree: [B, E_mst, 2] MST edges (undirected)
         original_pairs: [E_orig, 2]
         weights: [B, E_orig]
         threshold: float
-        leaf_only: bool – single-pass leaf-only pruning
     Returns:
         [B, E_kept_max, 2] pruned & padded trees
     """
@@ -58,13 +56,9 @@ def prune_tree_by_weight(
         edges_b = tree[b]
         ew = _edge_weights_for_batch_edges(edges_b, weights[b], pair_index, device)
 
-        if leaf_only:
-            leaf_mask = _leaf_mask_for_edges(edges_b)
-            # keep if NOT a leaf OR weight > threshold
-            keep_mask = (~leaf_mask) | (ew > threshold)
-        else:
-            # prune any edge with weight <= threshold
-            keep_mask = (ew > threshold)
+        leaf_mask = _leaf_mask_for_edges(edges_b)
+        # keep if NOT a leaf OR weight > threshold
+        keep_mask = (~leaf_mask) | (ew > threshold)
 
         pruned_trees.append(edges_b[keep_mask])
 
@@ -109,8 +103,5 @@ if __name__ == "__main__":
     print("Original tree:")
     print(tree.squeeze(0))
 
-    print("\nPruned tree (any edge <= threshold):")
-    print(prune_tree_by_weight(tree, pairs, weights, threshold, leaf_only=False).squeeze(0))
-
     print("\nPruned tree (leaf-only, single pass):")
-    print(prune_tree_by_weight(tree, pairs, weights, threshold, leaf_only=True).squeeze(0))
+    print(prune_tree_by_weight(tree, pairs, weights, threshold).squeeze(0))
