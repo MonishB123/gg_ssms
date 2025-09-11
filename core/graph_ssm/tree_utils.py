@@ -72,36 +72,3 @@ def prune_tree_by_weight(
         padded.append(t)
 
     return torch.stack(padded) if padded else torch.empty_like(tree)
-
-# ---- Test harness ----
-
-def create_test_case():
-    pairs = torch.tensor([
-        [0, 1], [1, 2], [2, 3], [3, 4], [4, 5],
-        [5, 6], [6, 7], [7, 8], [8, 9], [8, 10],
-        [8, 11], [9, 10], [9, 11], [10, 11]
-    ], dtype=torch.int32)
-
-    weights = torch.tensor([[
-        0.9635, 0.6404, 0.8880, 0.9658, 0.8253,
-        0.7223, 0.6875, 0.8048, 0.6865, 0.8971,
-        0.7102, 0.6896, 0.6908, 0.6234
-    ]])
-
-    tree = torch.tensor([[
-        [0, 1], [1, 2], [2, 3], [4, 5], [5, 6],
-        [6, 7], [8, 9], [10, 11], [3, 4], [7, 8],
-        [9, 10]
-    ]], dtype=torch.int32)
-
-    return tree, pairs, weights
-
-if __name__ == "__main__":
-    tree, pairs, weights = create_test_case()
-    threshold = 0.7
-
-    print("Original tree:")
-    print(tree.squeeze(0))
-
-    print("\nPruned tree (leaf-only, single pass):")
-    print(prune_tree_by_weight(tree, pairs, weights, threshold).squeeze(0))
