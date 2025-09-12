@@ -1,4 +1,5 @@
 import torch
+import os
 
 def _build_pair_index(original_pairs: torch.Tensor):
     """Bidirectional (u,v)->col index map for O(1) lookups."""
@@ -34,10 +35,10 @@ def prune_tree_by_weight(
     tree: torch.Tensor,
     original_pairs: torch.Tensor,
     weights: torch.Tensor,
-    threshold: float,
+    threshold: float
 ):
-    """Prune edges with weight <= threshold, leaf-only (single pass).
-       Only prune edges that are leaves AND <= threshold.
+    """Prune edges with weight >= threshold, leaf-only (single pass).
+       Only prune edges that are leaves AND >= threshold.
     Args:
         tree: [B, E_mst, 2] MST edges (undirected)
         original_pairs: [E_orig, 2]
@@ -46,6 +47,13 @@ def prune_tree_by_weight(
     Returns:
         [B, E_kept_max, 2] pruned & padded trees
     """
+
+    # Print the tree
+    print("Tree before pruning:")
+    print(tree)
+    # Print the weights
+    print("Weights before pruning:")
+    print(weights)
     assert tree.dim() == 3 and tree.size(-1) == 2
     assert weights.dim() == 2
     device = tree.device
@@ -57,8 +65,8 @@ def prune_tree_by_weight(
         ew = _edge_weights_for_batch_edges(edges_b, weights[b], pair_index, device)
 
         leaf_mask = _leaf_mask_for_edges(edges_b)
-        # keep if NOT a leaf OR weight > threshold
-        keep_mask = (~leaf_mask) | (ew > threshold)
+        # keep if NOT a leaf OR weight < threshold
+        keep_mask = (~leaf_mask) | (ew < threshold)
 
         pruned_trees.append(edges_b[keep_mask])
 
@@ -71,4 +79,59 @@ def prune_tree_by_weight(
             t = torch.cat([t, pad], dim=0)
         padded.append(t)
 
-    return torch.stack(padded) if padded else torch.empty_like(tree)
+    result = torch.stack(padded) if padded else torch.empty_like(tree)
+    
+    # Print padded results after padding occurs
+    # Hardcoded output directory
+    output_dir = "core/graph_ssm/tree_utils_tests/outputs"
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+        
+    # Process only the first batch for simplicity
+    if result.shape[0] > 0:
+        batch_idx = 0
+        padded_tree_b = result[batch_idx]
+        weights_b = weights[batch_idx]
+        
+        # Create a mapping from edge pairs to weights
+        pair_to_weight = {}
+        for i, (u, v) in enumerate(original_pairs.tolist()):
+            pair_to_weight[(u, v)] = weights_b[i].item()
+            pair_to_weight[(v, u)] = weights_b[i].item()  # bidirectional
+        
+        # Get original MST edges and weights (before padding)
+        original_edges_list = [e for e in tree[batch_idx].tolist() if not (e[0] == 0 and e[1] == 0)]
+        original_weights_list = [round(pair_to_weight.get((u, v), 0.0), 4) for u, v in original_edges_list]
+        
+        # Get padded edges and weights (after padding)
+        padded_edges_list = padded_tree_b.tolist()
+        padded_weights_list = [round(pair_to_weight.get((u, v), 0.0), 4) if not (u == 0 and v == 0) else "" for u, v in padded_edges_list]
+        
+        # Save to markdown file
+        analysis_file = os.path.join(output_dir, "edge_analysis_padded.md")
+        with open(analysis_file, 'w') as f:
+            f.write("| Original Edges | Original Weights | Padded Edges | Padded Weights |\n")
+            f.write("|----------------|------------------|--------------|----------------|\n")
+            
+            # Find the maximum length to pad shorter lists
+            max_len = max(len(original_edges_list), len(padded_edges_list))
+            
+            # Pad shorter list with empty strings
+            original_edges_padded = original_edges_list + [""] * (max_len - len(original_edges_list))
+            original_weights_padded = original_weights_list + [""] * (max_len - len(original_weights_list))
+            padded_edges_padded = padded_edges_list + [""] * (max_len - len(padded_edges_list))
+            padded_weights_padded = padded_weights_list + [""] * (max_len - len(padded_weights_list))
+            
+            # Write each row
+            for i in range(max_len):
+                f.write(f"| {original_edges_padded[i]} | {original_weights_padded[i]} | {padded_edges_padded[i]} | {padded_weights_padded[i]} |\n")
+        
+        print(f"\nSaved padded edge analysis to: {analysis_file}")
+    
+
+    # Print the result
+    print("Edges after pruning:")
+    print(result)
+    print("Weights after pruning:")
+    print(weights)
+    return result

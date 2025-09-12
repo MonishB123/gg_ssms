@@ -182,8 +182,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print("\nResulting MST edges:")
                 print(tree.squeeze(0))  # Remove batch dimension for clearer printing
             
-            # Prune edges with weights below threshold
-            pruning_threshold = 0.368
+            # Prune edges with weights above threshold
+            # high weight = high similarity
+            pruning_threshold = 0.3688
             tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
             
             if tree_scanning_algorithm.iteration_count == 1:
