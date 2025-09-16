@@ -335,9 +335,14 @@ if __name__ == "__main__":
                 print("\nStarting forward pass...")
                 print_tensor_stats(images, "Input images")
                 outputs = model(images)
-                print("\nForward pass complete")
-                print_tensor_stats(outputs, "Model outputs")
-                print_tensor_stats(targets, "Target values")
+                print("\n=== Forward Pass Results ===")
+                print_tensor_stats(outputs, "Model predictions (after sigmoid)")
+                print_tensor_stats(targets, "Ground truth targets")
+                print("\nPrediction vs Target Summary:")
+                print(f"- Batch size: {outputs.shape[0]}")
+                print(f"- Sequence length: {outputs.shape[1]}")
+                print(f"- Coordinate dims: {outputs.shape[2]}")
+                print(f"- Mean absolute error: {(outputs - targets).abs().mean().item():.6f}")
                 
                 prev_output = outputs
                 loss = criterion(outputs, targets)
