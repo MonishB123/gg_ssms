@@ -327,30 +327,29 @@ if __name__ == "__main__":
                         if not has_nan and not has_inf:
                             print("2.5 Checking a few more samples...")
                         
-                        print("2.3 Checking sample for NaN/Inf...")
-                        has_nan_sample = torch.isnan(sample).any().item()
-                        has_inf_sample = torch.isinf(sample).any().item()
-                        print(f"2.4 Sample checks - NaN: {has_nan_sample}, Inf: {has_inf_sample}")
-                        
-                        if has_nan_sample or has_inf_sample:
-                            print("2.5 Found NaN/Inf in sample, skipping full check")
-                            has_nan = has_nan_sample
-                            has_inf = has_inf_sample
-                        else:
-                            print("2.5 Sample clean, checking full tensor...")
-                            # Try to do the check on GPU but with smaller chunks
-                            has_nan = False
-                            has_inf = False
-                            chunk_size = 2  # Process 2 batch items at a time
-                            for i in range(0, tensor.shape[0], chunk_size):
-                                chunk = tensor[i:i+chunk_size]
-                                print(f"2.6 Checking chunk {i//chunk_size + 1}/{(tensor.shape[0] + chunk_size - 1)//chunk_size}")
-                                has_nan = has_nan or torch.isnan(chunk).any().item()
-                                has_inf = has_inf or torch.isinf(chunk).any().item()
-                                if has_nan or has_inf:
-                                    print("2.7 Found NaN/Inf in chunk, stopping check")
+                            # Try a few random indices
+                            indices = [
+                                (0,0,1),  # First batch, first seq, second coord
+                                (0,20,0), # First batch, middle seq, first coord
+                                (-1,-1,-1) # Last of each dimension
+                            ]
+                            for idx in indices:
+                                try:
+                                    val = float(tensor[idx])
+                                    print(f"Sample at {idx}: {val}")
+                                    if torch.isnan(torch.tensor([val])).item():
+                                        has_nan = True
+                                        print(f"Found NaN at {idx}")
+                                        break
+                                    if torch.isinf(torch.tensor([val])).item():
+                                        has_inf = True
+                                        print(f"Found Inf at {idx}")
+                                        break
+                                except Exception as e:
+                                    print(f"Error checking index {idx}: {str(e)}")
                                     break
-                            print("2.8 Full check complete")
+                            
+                            print("2.6 Sample checks complete")
                         
                         # Try to get some raw values
                         print("2.7 Attempting to get sample values...")
