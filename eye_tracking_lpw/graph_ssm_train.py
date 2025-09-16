@@ -180,6 +180,14 @@ class GraphSSMModel(nn.Module):
 
         # 3) Final MLP: we want to predict (x, y) => dimension=2
         self.fc_out = nn.Linear(self.d_model, 2)
+        
+        # Initialize weights to help with the target value range
+        with torch.no_grad():
+            self.fc_out.weight.data.normal_(mean=0.0, std=0.02)
+            self.fc_out.bias.data.fill_(0.5)  # Initialize bias closer to target mean
+        
+        # Add activation to constrain output range
+        self.final_activation = nn.Sigmoid()  # Will constrain outputs to [0,1]
 
     def forward(self, x):
         """
@@ -207,6 +215,8 @@ class GraphSSMModel(nn.Module):
 
         # Final linear => [B, T, 2]
         coords = self.fc_out(seq_out)
+        # Apply sigmoid to constrain outputs to [0,1] range
+        coords = self.final_activation(coords)
         return coords
 
 
@@ -253,8 +263,18 @@ if __name__ == "__main__":
     print(f"Total number of parameters: {total_params}")
 
     criterion = nn.SmoothL1Loss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
-
+    
+    # Use a smaller initial learning rate with warmup
+    initial_lr = 0.0001
+    max_lr = 0.001
+    warmup_epochs = 2
+    optimizer = optim.Adam(model.parameters(), lr=initial_lr)
+    
+    def get_lr_multiplier(epoch):
+        if epoch < warmup_epochs:
+            return (epoch + 1) * (max_lr / initial_lr) / warmup_epochs
+        return 1.0
+    
     # Training loop
     model.train()
     best_val_loss = float("inf")  # Initialize with a large value
@@ -287,6 +307,12 @@ if __name__ == "__main__":
         total_data = len(train_dataloader)
         print(f"Total batches in epoch: {total_data}")
         print_memory_stats()
+        
+        # Update learning rate
+        lr_multiplier = get_lr_multiplier(epoch)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = initial_lr * lr_multiplier
+        print(f"Learning rate: {optimizer.param_groups[0]['lr']:.6f}")
         
         for t, data in tqdm.tqdm(enumerate(train_dataloader, 0), total=total_data):
             try:
