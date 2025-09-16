@@ -302,17 +302,41 @@ if __name__ == "__main__":
             
     def print_tensor_stats(tensor, name):
         if torch.is_tensor(tensor):
-            print(f"{name} stats:")
-            print(f"- shape: {tensor.shape}")
-            print(f"- dtype: {tensor.dtype}")
-            print(f"- device: {tensor.device}")
-            print(f"- min: {tensor.min().item():.6f}")
-            print(f"- max: {tensor.max().item():.6f}")
-            print(f"- mean: {tensor.mean().item():.6f}")
-            if torch.isnan(tensor).any():
-                print(f"WARNING: {name} contains NaN values!")
-            if torch.isinf(tensor).any():
-                print(f"WARNING: {name} contains Inf values!")
+            try:
+                print(f"{name} stats:")
+                print(f"- shape: {tensor.shape}")
+                print(f"- dtype: {tensor.dtype}")
+                print(f"- device: {tensor.device}")
+                
+                # Check for NaN/Inf before computing stats
+                has_nan = torch.isnan(tensor).any()
+                has_inf = torch.isinf(tensor).any()
+                
+                if has_nan:
+                    print(f"WARNING: {name} contains NaN values!")
+                    nan_count = torch.isnan(tensor).sum().item()
+                    print(f"- NaN count: {nan_count}")
+                    print(f"- NaN locations: {torch.nonzero(torch.isnan(tensor))[:5]}")  # First 5 locations
+                
+                if has_inf:
+                    print(f"WARNING: {name} contains Inf values!")
+                    inf_count = torch.isinf(tensor).sum().item()
+                    print(f"- Inf count: {inf_count}")
+                    print(f"- Inf locations: {torch.nonzero(torch.isinf(tensor))[:5]}")  # First 5 locations
+                
+                if not has_nan and not has_inf:
+                    # Only compute stats if tensor has valid values
+                    print(f"- min: {tensor.min().item():.6f}")
+                    print(f"- max: {tensor.max().item():.6f}")
+                    print(f"- mean: {tensor.mean().item():.6f}")
+                    # Add more detailed stats
+                    print(f"- std: {tensor.std().item():.6f}")
+                    print(f"- non-zero elements: {(tensor != 0).sum().item()}")
+            except Exception as e:
+                print(f"Error computing stats for {name}: {str(e)}")
+                # Try to print raw tensor values
+                print("First few values:")
+                print(tensor.flatten()[:10])
     
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
