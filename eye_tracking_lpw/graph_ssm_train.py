@@ -312,13 +312,38 @@ if __name__ == "__main__":
                 
                 print("2. Checking for NaN/Inf...")
                 with torch.no_grad():  # Prevent any gradient computation
-                    has_nan = torch.isnan(tensor).any()
-                    print("NaN check done")
-                    has_inf = torch.isinf(tensor).any()
-                    print("Inf check done")
+                    try:
+                        print("2.1 Starting NaN check...")
+                        nan_tensor = torch.isnan(tensor)
+                        print("2.2 NaN tensor created")
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()  # Make sure GPU is done
+                        has_nan = nan_tensor.any().item()  # Force synchronization by calling item()
+                        print("2.3 NaN check complete")
+                        
+                        print("2.4 Starting Inf check...")
+                        inf_tensor = torch.isinf(tensor)
+                        print("2.5 Inf tensor created")
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()  # Make sure GPU is done
+                        has_inf = inf_tensor.any().item()  # Force synchronization by calling item()
+                        print("2.6 Inf check complete")
+                        
+                        # Try to get some raw values
+                        print("2.7 Attempting to get sample values...")
+                        sample_val = tensor[0,0,0].item()
+                        print(f"2.8 Sample value: {sample_val}")
+                        
+                    except Exception as e:
+                        print(f"Error during NaN/Inf check: {str(e)}")
+                        print("Tensor state:")
+                        print(f"- requires_grad: {tensor.requires_grad}")
+                        print(f"- is_leaf: {tensor.is_leaf}")
+                        print(f"- grad_fn: {tensor.grad_fn}")
+                        raise
                 
                 print("3. Computing detailed stats...")
-                print("3.1 Checking NaN/Inf flags...")
+                print("3.1 Results of checks:")
                 print(f"- has_nan: {has_nan}")
                 print(f"- has_inf: {has_inf}")
                 
