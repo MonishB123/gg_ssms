@@ -313,10 +313,19 @@ if __name__ == "__main__":
                 print("2. Checking for NaN/Inf...")
                 with torch.no_grad():  # Prevent any gradient computation
                     try:
-                        print("2.1 Getting small sample to CPU...")
-                        # Just check first item of batch to avoid memory issues
-                        sample = tensor[0].cpu()
-                        print("2.2 Sample moved to CPU")
+                        print("2.1 Attempting to get single value...")
+                        # Try to get just one value first
+                        single_val = float(tensor[0,0,0])  # Convert to Python float without CPU transfer
+                        print(f"2.2 First value: {single_val}")
+                        
+                        print("2.3 Checking single value...")
+                        has_nan = torch.isnan(torch.tensor([single_val])).item()
+                        has_inf = torch.isinf(torch.tensor([single_val])).item()
+                        print(f"2.4 Single value check - NaN: {has_nan}, Inf: {has_inf}")
+                        
+                        # If first value is okay, try a few more random samples
+                        if not has_nan and not has_inf:
+                            print("2.5 Checking a few more samples...")
                         
                         print("2.3 Checking sample for NaN/Inf...")
                         has_nan_sample = torch.isnan(sample).any().item()
