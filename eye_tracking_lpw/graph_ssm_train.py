@@ -318,35 +318,47 @@ if __name__ == "__main__":
                     print("Inf check done")
                 
                 print("3. Computing detailed stats...")
-                if has_nan:
-                    print("Found NaN values, counting...")
-                    nan_count = torch.isnan(tensor).sum().item()
-                    print(f"- NaN count: {nan_count}")
-                    nan_locs = torch.nonzero(torch.isnan(tensor))
-                    print(f"- First NaN at: {nan_locs[0] if nan_locs.numel() > 0 else 'None'}")
+                print("3.1 Checking NaN/Inf flags...")
+                print(f"- has_nan: {has_nan}")
+                print(f"- has_inf: {has_inf}")
                 
-                if has_inf:
-                    print("Found Inf values, counting...")
-                    inf_count = torch.isinf(tensor).sum().item()
-                    print(f"- Inf count: {inf_count}")
-                    inf_locs = torch.nonzero(torch.isinf(tensor))
-                    print(f"- First Inf at: {inf_locs[0] if inf_locs.numel() > 0 else 'None'}")
-                
-                if not has_nan and not has_inf:
-                    print("Computing min...")
-                    min_val = tensor.min().item()
-                    print("Computing max...")
-                    max_val = tensor.max().item()
-                    print("Computing mean...")
-                    mean_val = tensor.mean().item()
-                    print("Computing std...")
-                    std_val = tensor.std().item()
-                    
-                    print("4. Final stats:")
-                    print(f"- min: {min_val:.6f}")
-                    print(f"- max: {max_val:.6f}")
-                    print(f"- mean: {mean_val:.6f}")
-                    print(f"- std: {std_val:.6f}")
+                print("3.2 Starting tensor operations...")
+                with torch.no_grad():  # Make sure we're not tracking gradients
+                    try:
+                        print("3.2.1 Getting first few raw values...")
+                        first_vals = tensor[0, 0, :].cpu().tolist()
+                        print(f"First values: {first_vals}")
+                        
+                        print("3.2.2 Computing basic reduction ops...")
+                        print("- Starting min...")
+                        min_val = float(tensor.min().cpu())
+                        print(f"- Min done: {min_val}")
+                        
+                        print("- Starting max...")
+                        max_val = float(tensor.max().cpu())
+                        print(f"- Max done: {max_val}")
+                        
+                        print("- Starting mean...")
+                        mean_val = float(tensor.mean().cpu())
+                        print(f"- Mean done: {mean_val}")
+                        
+                        print("- Starting std...")
+                        std_val = float(tensor.std().cpu())
+                        print(f"- Std done: {std_val}")
+                        
+                        print("3.2.3 All basic stats computed successfully")
+                        print("4. Final stats:")
+                        print(f"- min: {min_val:.6f}")
+                        print(f"- max: {max_val:.6f}")
+                        print(f"- mean: {mean_val:.6f}")
+                        print(f"- std: {std_val:.6f}")
+                    except Exception as e:
+                        print(f"Error during tensor operations: {str(e)}")
+                        print("Tensor info:")
+                        print(f"- requires_grad: {tensor.requires_grad}")
+                        print(f"- is_leaf: {tensor.is_leaf}")
+                        print(f"- is_contiguous: {tensor.is_contiguous()}")
+                        raise
                 
                 print("5. Sampling values...")
                 # Sample some values from different parts of the tensor
