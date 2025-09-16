@@ -265,6 +265,20 @@ if __name__ == "__main__":
         if torch.cuda.is_available():
             print(f"GPU Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
             print(f"GPU Memory cached: {torch.cuda.memory_reserved()/1e9:.2f} GB")
+            
+    def print_tensor_stats(tensor, name):
+        if torch.is_tensor(tensor):
+            print(f"{name} stats:")
+            print(f"- shape: {tensor.shape}")
+            print(f"- dtype: {tensor.dtype}")
+            print(f"- device: {tensor.device}")
+            print(f"- min: {tensor.min().item():.6f}")
+            print(f"- max: {tensor.max().item():.6f}")
+            print(f"- mean: {tensor.mean().item():.6f}")
+            if torch.isnan(tensor).any():
+                print(f"WARNING: {name} contains NaN values!")
+            if torch.isinf(tensor).any():
+                print(f"WARNING: {name} contains Inf values!")
     
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
@@ -292,26 +306,51 @@ if __name__ == "__main__":
                 print("Gradients zeroed")
 
                 # Forward pass
-                print("Starting forward pass...")
+                print("\nStarting forward pass...")
+                print_tensor_stats(images, "Input images")
                 outputs = model(images)
-                print(f"Forward pass complete. Output shape: {outputs.shape}")
+                print("\nForward pass complete")
+                print_tensor_stats(outputs, "Model outputs")
+                print_tensor_stats(targets, "Target values")
                 
                 prev_output = outputs
                 loss = criterion(outputs, targets)
-                print(f"Loss computed: {loss.item():.6f}")
+                print(f"\nLoss computed: {loss.item():.6f}")
 
                 # Backward pass and optimization
-                print("Starting backward pass...")
+                print("\nStarting backward pass...")
                 loss.backward()
                 
-                # Print gradient norms
+                # Print gradient norms and check parameter health
+                print("\nChecking gradients and parameters:")
                 total_norm = 0.0
-                for p in model.parameters():
+                for name, p in model.named_parameters():
                     if p.grad is not None:
                         param_norm = p.grad.data.norm(2)
-                        total_norm += param_norm.item() ** 2
+                        grad_norm = param_norm.item()
+                        total_norm += grad_norm ** 2
+                        if grad_norm > 10:  # Large gradient warning
+                            print(f"WARNING: Large gradient in {name}: {grad_norm:.6f}")
+                        if torch.isnan(p.grad).any():
+                            print(f"WARNING: NaN gradient in {name}")
+                        if torch.isinf(p.grad).any():
+                            print(f"WARNING: Inf gradient in {name}")
+                    else:
+                        print(f"No gradient for parameter {name}")
+                        
+                    # Check parameter values
+                    if torch.isnan(p).any():
+                        print(f"WARNING: NaN values in parameter {name}")
+                    if torch.isinf(p).any():
+                        print(f"WARNING: Inf values in parameter {name}")
+                        
                 total_norm = total_norm ** 0.5
-                print(f"Gradient norm: {total_norm:.6f}")
+                print(f"Total gradient norm: {total_norm:.6f}")
+                
+                # Gradient clipping if norm is too large
+                if total_norm > 10:
+                    print(f"WARNING: Large gradient norm ({total_norm:.6f}), clipping gradients")
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 10)
                 
                 optimizer.step()
                 print("Optimizer step complete")
