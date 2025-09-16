@@ -185,33 +185,74 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # Prune edges with weights above threshold
             # high weight = high similarity
             pruning_threshold = 0.45
-            tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
+            print(f"Using pruning threshold: {pruning_threshold}")
+            
+            try:
+                tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
+                print("Pruning completed successfully")
+                print(f"Tree shape after pruning: {tree.shape}")
+            except Exception as e:
+                print(f"Error during pruning: {str(e)}")
+                raise
             
             if tree_scanning_algorithm.iteration_count == 1:
                 print(f"\nPruned tree (threshold={pruning_threshold}):")
                 print(tree.squeeze(0))
             
+            print("\nStarting BFS operation...")
+            print(f"Input tree shape to BFS: {tree.shape}")
+            print(f"context_len: {context_len}")
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
+            print("BFS completed successfully")
+            print(f"sorted_index2 shape: {sorted_index2.shape}")
+            print(f"sorted_parent2 shape: {sorted_parent2.shape}")
+            print(f"sorted_child2 shape: {sorted_child2.shape}")
         else:
+            print("\nSkipping BFS, using sorted indices from first tree...")
             sorted_index2, sorted_parent2, sorted_child2 = (
                 sorted_index1,
                 sorted_parent1,
                 sorted_child1,
             )
+            print("Copied sorted indices successfully")
 
         # import pdb;pdb.set_trace()
     # import pdb;pdb.set_trace()
+    print("\nStarting first refine operation...")
+    print(f"feature_in shape: {feature_in.shape}")
+    print(f"weight shape: {weight.shape}")
+    print(f"sorted_index1 shape: {sorted_index1.shape}")
+    print(f"sorted_parent1 shape: {sorted_parent1.shape}")
+    print(f"sorted_child1 shape: {sorted_child1.shape}")
+    
     feature_out1 = refine(
         feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
     )
-    # import pdb;pdb.set_trace()
+    print(f"feature_out1 shape after first refine: {feature_out1.shape}")
+    
+    print("\nStarting batch_index_opr...")
+    print(f"weight shape before batch_index_opr: {weight.shape}")
+    print(f"sorted_index2 shape: {sorted_index2.shape}")
     edge_weight = batch_index_opr(weight, sorted_index2)
+    print(f"edge_weight shape after batch_index_opr: {edge_weight.shape}")
+    
+    print("\nStarting second refine operation...")
+    print(f"feature_in shape: {feature_in.shape}")
+    print(f"edge_weight shape: {edge_weight.shape}")
+    print(f"sorted_index2 shape: {sorted_index2.shape}")
+    print(f"sorted_parent2 shape: {sorted_parent2.shape}")
+    print(f"sorted_child2 shape: {sorted_child2.shape}")
+    
     feature_out2 = refine(
         feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
     )
+    print(f"feature_out2 shape after second refine: {feature_out2.shape}")
+    
+    print("\nCombining feature outputs...")
     feature_out = (
         feature_out2 * 0.3 + feature_out1
     )  # 0.3 is scaling factor (hyperparameter)
+    print(f"Final feature_out shape: {feature_out.shape}")
 
     feature_out = rearrange(
         torch.flip(feature_out.to(dtype), dims=[-1]),

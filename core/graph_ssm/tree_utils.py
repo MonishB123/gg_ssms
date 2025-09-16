@@ -129,29 +129,8 @@ def prune_tree_by_weight(
         print(f"\nSaved padded edge analysis to: {analysis_file}")
     
 
-    # Calculate and print summary statistics
-    for b in range(tree.shape[0]):
-        original_edges = [e for e in tree[b].tolist() if not (e[0] == 0 and e[1] == 0)]
-        pruned_edges = [e for e in result[b].tolist() if not (e[0] == 0 and e[1] == 0)]
-        
-        # Get unique nodes before and after
-        original_nodes = set()
-        for u, v in original_edges:
-            original_nodes.add(u)
-            original_nodes.add(v)
-            
-        pruned_nodes = set()
-        for u, v in pruned_edges:
-            pruned_nodes.add(u)
-            pruned_nodes.add(v)
-        
-        print(f"\nBatch {b} Summary:")
-        print(f"- Original: {len(original_nodes)} nodes, {len(original_edges)} edges")
-        print(f"- After pruning: {len(pruned_nodes)} nodes, {len(pruned_edges)} edges")
-        print(f"- Pruned: {len(original_nodes) - len(pruned_nodes)} nodes, {len(original_edges) - len(pruned_edges)} edges")
-    
     # Print the result
-    print("\nEdges after pruning:")
+    print("Edges after pruning:")
     print(result)
     print("Weights after pruning:")
     print(weights)
