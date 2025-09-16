@@ -258,32 +258,82 @@ if __name__ == "__main__":
     # Training loop
     model.train()
     best_val_loss = float("inf")  # Initialize with a large value
-
+    print("\nStarting training...")
+    print(f"Total epochs: {num_epochs}")
+    
+    def print_memory_stats():
+        if torch.cuda.is_available():
+            print(f"GPU Memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
+            print(f"GPU Memory cached: {torch.cuda.memory_reserved()/1e9:.2f} GB")
+    
     for epoch in range(num_epochs):
+        print(f"\nEpoch {epoch+1}/{num_epochs}")
+        print("=" * 50)
         running_loss = 0.0
         total_data = len(train_dataloader)
+        print(f"Total batches in epoch: {total_data}")
+        print_memory_stats()
+        
         for t, data in tqdm.tqdm(enumerate(train_dataloader, 0), total=total_data):
-            images, targets = data
-            images = images.to(device).float()
-            targets = targets.to(device).float()
+            try:
+                # Print batch info every 5 batches
+                if t % 5 == 0:
+                    print(f"\nProcessing batch {t}/{total_data}")
+                    print_memory_stats()
+                
+                images, targets = data
+                print(f"Batch input shapes - images: {images.shape}, targets: {targets.shape}")
+                
+                images = images.to(device).float()
+                targets = targets.to(device).float()
+                print("Data moved to device successfully")
 
-            optimizer.zero_grad()
+                optimizer.zero_grad()
+                print("Gradients zeroed")
 
-            # Forward pass
-            outputs = model(images)
-            prev_output = outputs
-            loss = criterion(outputs, targets)
+                # Forward pass
+                print("Starting forward pass...")
+                outputs = model(images)
+                print(f"Forward pass complete. Output shape: {outputs.shape}")
+                
+                prev_output = outputs
+                loss = criterion(outputs, targets)
+                print(f"Loss computed: {loss.item():.6f}")
 
-            # Backward pass and optimization
-            loss.backward()
-            optimizer.step()
+                # Backward pass and optimization
+                print("Starting backward pass...")
+                loss.backward()
+                
+                # Print gradient norms
+                total_norm = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        param_norm = p.grad.data.norm(2)
+                        total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** 0.5
+                print(f"Gradient norm: {total_norm:.6f}")
+                
+                optimizer.step()
+                print("Optimizer step complete")
 
-            running_loss += loss.item()
+                running_loss += loss.item()
+                
+                if t % 5 == 0:
+                    avg_loss = running_loss / (t + 1)
+                    print(f"Average loss so far: {avg_loss:.6f}")
+                    
+            except Exception as e:
+                print(f"Error in batch {t}: {str(e)}")
+                print("Stack trace:")
+                import traceback
+                traceback.print_exc()
+                raise  # Re-raise the exception after printing details
 
         epoch_loss = running_loss / len(train_dataloader)
         print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {epoch_loss:.4f}")
 
         # Validation
+        print("\nStarting validation...")
         val_running_loss = 0
         num_values = 0
         num_values_3 = 0
@@ -291,17 +341,36 @@ if __name__ == "__main__":
         num_values_1 = 0
         tot_values = 0
         model.eval()
+        print("Model set to eval mode")
+        print_memory_stats()
 
-        with torch.no_grad():
-            for images, targets in valid_dataloader:
-                images = images.to(device).float()
-                targets = targets.to(device).float()
-                outputs = model(images)
-                val_loss = criterion(outputs, targets)
-                dis = targets - outputs
-                dis[:, :, 0] *= height
-                dis[:, :, 1] *= width
-                dist = torch.norm(dis, dim=-1)
+        try:
+            print(f"Total validation batches: {len(valid_dataloader)}")
+            with torch.no_grad():
+                for val_batch, (images, targets) in enumerate(valid_dataloader):
+                    if val_batch % 5 == 0:
+                        print(f"\nValidating batch {val_batch}/{len(valid_dataloader)}")
+                        print_memory_stats()
+                    
+                    print(f"Validation batch shapes - images: {images.shape}, targets: {targets.shape}")
+                    images = images.to(device).float()
+                    targets = targets.to(device).float()
+                    print("Validation data moved to device")
+                    
+                    print("Running forward pass...")
+                    outputs = model(images)
+                    print(f"Forward pass complete. Output shape: {outputs.shape}")
+                    
+                    val_loss = criterion(outputs, targets)
+                    print(f"Validation loss: {val_loss.item():.6f}")
+                    
+                    # Computing distance metrics
+                    print("Computing distance metrics...")
+                    dis = targets - outputs
+                    dis[:, :, 0] *= height
+                    dis[:, :, 1] *= width
+                    dist = torch.norm(dis, dim=-1)
+                    print(f"Average distance: {dist.mean().item():.2f} pixels")
 
                 num_values = num_values + torch.sum(dist > 10)
                 num_values_5 = num_values_5 + torch.sum(dist > 5)

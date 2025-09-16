@@ -183,8 +183,8 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print(tree.squeeze(0))  # Remove batch dimension for clearer printing
             
             # Prune edges with weights above threshold
-            # high weight = high similarity
-            pruning_threshold = 0.9
+            # high weight = high disimilarity
+            pruning_threshold = 0.45
             print(f"Using pruning threshold: {pruning_threshold}")
             
             try:
