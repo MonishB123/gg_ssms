@@ -195,28 +195,42 @@ class GraphSSMModel(nn.Module):
             B=batch, T=sequence length, C=input_dim, H=height, W=width
         """
         B, T, C, H, W = x.shape
+        print(f"\nGraphSSMModel forward pass:")
+        print(f"1. Input shape: [B={B}, T={T}, C={C}, H={H}, W={W}]")
 
         # (A) Flatten time into batch for the 2D GraphSSM
         x_2d = x.view(B * T, C, H, W)  # => [B*T, C, H, W]
+        print(f"2. Flattened shape for spatial backbone: {x_2d.shape}")
 
         # Pass through spatial GraphSSM => [B*T, d_model, H', W']
         feat_2d = self.spatial_backbone(x_2d)
+        print(f"3. After spatial backbone: {feat_2d.shape}")
+        
         # We do global average pooling to get a single vector per frame
         if feat_2d.dim() == 4:
             # shape [B*T, d_model, H', W']
             feat_2d = F.adaptive_avg_pool2d(feat_2d, (1, 1))  # => [B*T, d_model, 1, 1]
             feat_2d = feat_2d.view(B * T, self.d_model)  # => [B*T, d_model]
+            print(f"4. After pooling: {feat_2d.shape}")
 
         # (B) Reshape into a sequence => [B, T, d_model]
         seq_in = feat_2d.view(B, T, self.d_model)
+        print(f"5. Reshaped for temporal SSM: {seq_in.shape}")
 
         # Forward pass through temporal GraphSSM => [B, T, d_model]
-        seq_out = self.temporal_ssm(seq_in, context_len=T)
+        print("\n6. Calling temporal_ssm.forward with:")
+        print(f"   - seq_in shape: {seq_in.shape}")
+        print(f"   - context_len: {T}")
+        seq_out = self.temporal_ssm(seq_in, context_len=T)  # This calls the TemporalGraphSSM forward
+        print(f"7. After temporal SSM: {seq_out.shape}")
 
         # Final linear => [B, T, 2]
         coords = self.fc_out(seq_out)
+        print(f"8. After final linear: {coords.shape}")
+        
         # Apply sigmoid to constrain outputs to [0,1] range
         coords = self.final_activation(coords)
+        print(f"9. Final output shape: {coords.shape}")
         return coords
 
 
@@ -315,6 +329,7 @@ if __name__ == "__main__":
         print(f"Learning rate: {optimizer.param_groups[0]['lr']:.6f}")
         
         for t, data in tqdm.tqdm(enumerate(train_dataloader, 0), total=total_data):
+            print(f"Processing batch {t}/{total_data}")
             try:
                 # Print batch info every 5 batches
                 if t % 5 == 0:
@@ -331,10 +346,15 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 print("Gradients zeroed")
 
-                # Forward pass
+                # Forward pass through GraphSSMModel
                 print("\nStarting forward pass...")
                 print_tensor_stats(images, "Input images")
-                outputs = model(images)
+                print(f"Input shape to model: {images.shape}")  # [B, T, C, H, W]
+                print(f"Context length: {images.shape[1]}")  # T is the context length
+                
+                # This calls GraphSSMModel.forward() which eventually calls TemporalGraphSSM.forward()
+                outputs = model(images)  # model is GraphSSMModel instance
+                
                 print("\n=== Forward Pass Results ===")
                 print_tensor_stats(outputs, "Model predictions (after sigmoid)")
                 print_tensor_stats(targets, "Ground truth targets")
