@@ -303,40 +303,66 @@ if __name__ == "__main__":
     def print_tensor_stats(tensor, name):
         if torch.is_tensor(tensor):
             try:
-                print(f"{name} stats:")
+                print(f"\nStarting stats for {name}...")
+                print("1. Basic info:")
                 print(f"- shape: {tensor.shape}")
                 print(f"- dtype: {tensor.dtype}")
                 print(f"- device: {tensor.device}")
+                print("Basic info printed successfully")
                 
-                # Check for NaN/Inf before computing stats
-                has_nan = torch.isnan(tensor).any()
-                has_inf = torch.isinf(tensor).any()
+                print("2. Checking for NaN/Inf...")
+                with torch.no_grad():  # Prevent any gradient computation
+                    has_nan = torch.isnan(tensor).any()
+                    print("NaN check done")
+                    has_inf = torch.isinf(tensor).any()
+                    print("Inf check done")
                 
+                print("3. Computing detailed stats...")
                 if has_nan:
-                    print(f"WARNING: {name} contains NaN values!")
+                    print("Found NaN values, counting...")
                     nan_count = torch.isnan(tensor).sum().item()
                     print(f"- NaN count: {nan_count}")
-                    print(f"- NaN locations: {torch.nonzero(torch.isnan(tensor))[:5]}")  # First 5 locations
+                    nan_locs = torch.nonzero(torch.isnan(tensor))
+                    print(f"- First NaN at: {nan_locs[0] if nan_locs.numel() > 0 else 'None'}")
                 
                 if has_inf:
-                    print(f"WARNING: {name} contains Inf values!")
+                    print("Found Inf values, counting...")
                     inf_count = torch.isinf(tensor).sum().item()
                     print(f"- Inf count: {inf_count}")
-                    print(f"- Inf locations: {torch.nonzero(torch.isinf(tensor))[:5]}")  # First 5 locations
+                    inf_locs = torch.nonzero(torch.isinf(tensor))
+                    print(f"- First Inf at: {inf_locs[0] if inf_locs.numel() > 0 else 'None'}")
                 
                 if not has_nan and not has_inf:
-                    # Only compute stats if tensor has valid values
-                    print(f"- min: {tensor.min().item():.6f}")
-                    print(f"- max: {tensor.max().item():.6f}")
-                    print(f"- mean: {tensor.mean().item():.6f}")
-                    # Add more detailed stats
-                    print(f"- std: {tensor.std().item():.6f}")
-                    print(f"- non-zero elements: {(tensor != 0).sum().item()}")
+                    print("Computing min...")
+                    min_val = tensor.min().item()
+                    print("Computing max...")
+                    max_val = tensor.max().item()
+                    print("Computing mean...")
+                    mean_val = tensor.mean().item()
+                    print("Computing std...")
+                    std_val = tensor.std().item()
+                    
+                    print("4. Final stats:")
+                    print(f"- min: {min_val:.6f}")
+                    print(f"- max: {max_val:.6f}")
+                    print(f"- mean: {mean_val:.6f}")
+                    print(f"- std: {std_val:.6f}")
+                
+                print("5. Sampling values...")
+                # Sample some values from different parts of the tensor
+                flat_tensor = tensor.flatten()
+                indices = torch.linspace(0, flat_tensor.numel()-1, steps=5).long()
+                samples = flat_tensor[indices]
+                print("Sample values from tensor:")
+                print(samples.tolist())
+                
             except Exception as e:
-                print(f"Error computing stats for {name}: {str(e)}")
-                # Try to print raw tensor values
-                print("First few values:")
-                print(tensor.flatten()[:10])
+                print(f"Error during stats computation: {str(e)}")
+                print("Traceback:")
+                import traceback
+                traceback.print_exc()
+                
+            print(f"Finished stats for {name}")
         print("finish printing tensor stats")
     
     for epoch in range(num_epochs):
