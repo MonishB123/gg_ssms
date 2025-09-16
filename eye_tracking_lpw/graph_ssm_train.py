@@ -371,39 +371,46 @@ if __name__ == "__main__":
                     dis[:, :, 1] *= width
                     dist = torch.norm(dis, dim=-1)
                     print(f"Average distance: {dist.mean().item():.2f} pixels")
+                    
+                    num_values += torch.sum(dist > 10)
+                    num_values_5 += torch.sum(dist > 5)
+                    num_values_3 += torch.sum(dist > 3)
+                    num_values_1 += torch.sum(dist > 1)
+                    tot_values += dist.numel()
+                    val_running_loss += val_loss.item()
+        except Exception as e:
+            print(f"Error during validation: {str(e)}")
+            print("Stack trace:")
+            import traceback
+            traceback.print_exc()
+            raise
+            
+        val_epoch_loss = val_running_loss / len(valid_dataloader)
+        err_rate = num_values / tot_values
+        err_rate_3 = num_values_3 / tot_values
+        err_rate_5 = num_values_5 / tot_values
+        err_rate_1 = num_values_1 / tot_values
+        print(f"Validation Loss: {val_epoch_loss:.4f}")
+        print(f"err_rate: {err_rate:.4f}")
 
-                num_values = num_values + torch.sum(dist > 10)
-                num_values_5 = num_values_5 + torch.sum(dist > 5)
-                num_values_3 = num_values_3 + torch.sum(dist > 3)
-                num_values_1 = num_values_1 + torch.sum(dist > 1)
-                tot_values = tot_values + dist.numel()
-                val_running_loss += val_loss.item()
-            val_epoch_loss = val_running_loss / len(valid_dataloader)
-            err_rate = num_values / tot_values
-            err_rate_3 = num_values_3 / tot_values
-            err_rate_5 = num_values_5 / tot_values
-            err_rate_1 = num_values_1 / tot_values
-            print(f"Validation Loss: {val_epoch_loss:.4f}")
-            print(f"err_rate: {err_rate:.4f}")
+        wandb.log(
+            {
+                "epoch": epoch,
+                "train_loss": epoch_loss,
+                "val_loss": val_epoch_loss,
+                "err_rate": err_rate.item(),
+                "err_rate_1": err_rate_1.item(),
+                "err_rate_3": err_rate_3.item(),
+                "err_rate_5": err_rate_5.item(),
+            }
+        )
 
-            wandb.log(
-                {
-                    "epoch": epoch,
-                    "train_loss": epoch_loss,
-                    "val_loss": val_epoch_loss,
-                    "err_rate": err_rate.item(),
-                    "err_rate_1": err_rate_1.item(),
-                    "err_rate_3": err_rate_3.item(),
-                    "err_rate_5": err_rate_5.item(),
-                }
+        # File path
+        file_path = os.path.join(log_dir, "training_log.txt")
+        with open(file_path, "a") as f:
+            f.write(
+                f"Size {height}, Epoch {epoch}, Loss: {val_epoch_loss}, err_rate_1:{err_rate_1}, err_rate_3:{err_rate_3}, err_rate_5:{err_rate_5}  err: {err_rate} num_values: {num_values} tot_values: {tot_values}\n"
             )
-
-            # File path
-            file_path = os.path.join(log_dir, "training_log.txt")
-            with open(file_path, "a") as f:
-                f.write(
-                    f"Size {height}, Epoch {epoch}, Loss: {val_epoch_loss}, err_rate_1:{err_rate_1}, err_rate_3:{err_rate_3}, err_rate_5:{err_rate_5}  err: {err_rate} num_values: {num_values} tot_values: {tot_values}\n"
-                )
             # Save the model if it has the best validation loss so far
             if val_epoch_loss < best_val_loss:
                 best_val_loss = val_epoch_loss
