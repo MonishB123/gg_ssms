@@ -254,23 +254,55 @@ def tree_scanning_algorithm(self, input_states, context_len):
     )  # 0.3 is scaling factor (hyperparameter)
     print(f"Final feature_out shape: {feature_out.shape}")
 
+    print("\nStarting final feature transformations...")
+    print("1. Flipping and rearranging feature_out...")
+    feature_out_flipped = torch.flip(feature_out.to(dtype), dims=[-1])
+    print(f"- After flip shape: {feature_out_flipped.shape}")
+    
     feature_out = rearrange(
-        torch.flip(feature_out.to(dtype), dims=[-1]),
+        feature_out_flipped,
         "b (d n) l -> b l d n",
         b=batch_size,
         n=discrete_A.shape[-1],
     ).contiguous()
+    print(f"- After rearrange shape: {feature_out.shape}")
+    
+    print("\n2. Computing scan output...")
+    print(f"- feature_out shape: {feature_out.shape}")
+    print(f"- C shape: {C.shape}")
+    C_expanded = C.unsqueeze(-1)
+    print(f"- C expanded shape: {C_expanded.shape}")
+    
     scan_output_ = (
-        (feature_out @ C.unsqueeze(-1)).squeeze(-1).transpose(-1, -2)
+        (feature_out @ C_expanded).squeeze(-1).transpose(-1, -2)
     )  # (B, L, D, N) @ (B, L, N, 1) -> (B, L, D, 1)
+    print(f"- scan_output_ shape: {scan_output_.shape}")
 
+    print("\n3. Adding hidden states contribution...")
+    print(f"- hidden_states shape: {hidden_states.shape}")
+    print(f"- self.D shape: {self.D.shape}")
+    hidden_contribution = hidden_states * self.D[None, :, None]
+    print(f"- hidden contribution shape: {hidden_contribution.shape}")
+    
     # [batch, seq_len, intermediade_size]
-    scan_output = scan_output_ + (hidden_states * self.D[None, :, None])
-    scan_output = scan_output * self.act(gate)
+    scan_output = scan_output_ + hidden_contribution
+    print(f"- scan_output after addition shape: {scan_output.shape}")
+    
+    print("\n4. Applying gate activation...")
+    print(f"- gate shape: {gate.shape}")
+    gate_activated = self.act(gate)
+    print(f"- activated gate shape: {gate_activated.shape}")
+    scan_output = scan_output * gate_activated
+    print(f"- gated scan_output shape: {scan_output.shape}")
+    
+    print("\n5. Final projection...")
+    scan_output_transposed = scan_output.transpose(1, 2)
+    print(f"- transposed scan_output shape: {scan_output_transposed.shape}")
     # 4. Final linear projection
     contextualized_states = self.out_proj(
-        scan_output.transpose(1, 2)
+        scan_output_transposed
     )  # [batch, seq_len, hidden_size]
+    print(f"- final contextualized_states shape: {contextualized_states.shape}")
     return contextualized_states
 
 
