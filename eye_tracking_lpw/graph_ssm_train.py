@@ -337,6 +337,7 @@ if __name__ == "__main__":
                 # Try to print raw tensor values
                 print("First few values:")
                 print(tensor.flatten()[:10])
+        print("finish printing tensor stats")
     
     for epoch in range(num_epochs):
         print(f"\nEpoch {epoch+1}/{num_epochs}")
