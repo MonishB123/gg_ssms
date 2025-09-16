@@ -313,21 +313,35 @@ if __name__ == "__main__":
                 print("2. Checking for NaN/Inf...")
                 with torch.no_grad():  # Prevent any gradient computation
                     try:
-                        print("2.1 Starting NaN check...")
-                        nan_tensor = torch.isnan(tensor)
-                        print("2.2 NaN tensor created")
-                        if torch.cuda.is_available():
-                            torch.cuda.synchronize()  # Make sure GPU is done
-                        has_nan = nan_tensor.any().item()  # Force synchronization by calling item()
-                        print("2.3 NaN check complete")
+                        print("2.1 Getting small sample to CPU...")
+                        # Just check first item of batch to avoid memory issues
+                        sample = tensor[0].cpu()
+                        print("2.2 Sample moved to CPU")
                         
-                        print("2.4 Starting Inf check...")
-                        inf_tensor = torch.isinf(tensor)
-                        print("2.5 Inf tensor created")
-                        if torch.cuda.is_available():
-                            torch.cuda.synchronize()  # Make sure GPU is done
-                        has_inf = inf_tensor.any().item()  # Force synchronization by calling item()
-                        print("2.6 Inf check complete")
+                        print("2.3 Checking sample for NaN/Inf...")
+                        has_nan_sample = torch.isnan(sample).any().item()
+                        has_inf_sample = torch.isinf(sample).any().item()
+                        print(f"2.4 Sample checks - NaN: {has_nan_sample}, Inf: {has_inf_sample}")
+                        
+                        if has_nan_sample or has_inf_sample:
+                            print("2.5 Found NaN/Inf in sample, skipping full check")
+                            has_nan = has_nan_sample
+                            has_inf = has_inf_sample
+                        else:
+                            print("2.5 Sample clean, checking full tensor...")
+                            # Try to do the check on GPU but with smaller chunks
+                            has_nan = False
+                            has_inf = False
+                            chunk_size = 2  # Process 2 batch items at a time
+                            for i in range(0, tensor.shape[0], chunk_size):
+                                chunk = tensor[i:i+chunk_size]
+                                print(f"2.6 Checking chunk {i//chunk_size + 1}/{(tensor.shape[0] + chunk_size - 1)//chunk_size}")
+                                has_nan = has_nan or torch.isnan(chunk).any().item()
+                                has_inf = has_inf or torch.isinf(chunk).any().item()
+                                if has_nan or has_inf:
+                                    print("2.7 Found NaN/Inf in chunk, stopping check")
+                                    break
+                            print("2.8 Full check complete")
                         
                         # Try to get some raw values
                         print("2.7 Attempting to get sample values...")
