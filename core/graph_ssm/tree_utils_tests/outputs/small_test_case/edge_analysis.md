@@ -1,3 +1,6 @@
+
+## Batch 0
+
 | Original Edges | Original Weights | Pruned Edges | Pruned Weights |
 |----------------|------------------|--------------|----------------|
 | [0, 1] | 0.9635 | [1, 2] | 0.6404 |

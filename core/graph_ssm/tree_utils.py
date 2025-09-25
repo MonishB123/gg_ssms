@@ -12,10 +12,19 @@ def _build_pair_index(original_pairs: torch.Tensor):
 def _edge_weights_for_batch_edges(batch_edges, weights_row, pair_index, device):
     cols = [pair_index.get(tuple(e.tolist()), None) for e in batch_edges]
     # fill missing with 0.0
-    return torch.stack([
+    weights = torch.stack([
         (weights_row[c] if c is not None else torch.tensor(0.0, device=device, dtype=weights_row.dtype))
         for c in cols
     ])
+    print("\nDebug _edge_weights_for_batch_edges:")
+    print("- batch_edges shape:", batch_edges.shape)
+    print("- weights shape:", weights.shape)
+    print("- weights stats - mean:", weights.mean().item(), "std:", weights.std().item())
+    print("- weights contains NaN:", torch.isnan(weights).any().item())
+    print("- weights contains Inf:", torch.isinf(weights).any().item())
+    if torch.isnan(weights).any() or torch.isinf(weights).any():
+        print("- First NaN/Inf positions:", torch.where(torch.isnan(weights) | torch.isinf(weights)))
+    return weights
 
 def _is_connected(edges):
     """Check if a set of edges forms a connected graph using DFS.

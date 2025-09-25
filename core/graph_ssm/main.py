@@ -68,15 +68,43 @@ def norm2_distance(fm_ref, fm_tar):
 
 
 def cosine_distance(fm_ref, fm_tar):
+    print("\nDebug cosine_distance:")
+    print("- fm_ref shape:", fm_ref.shape)
+    print("- fm_tar shape:", fm_tar.shape)
+    print("- fm_ref stats - mean:", fm_ref.mean().item(), "std:", fm_ref.std().item())
+    print("- fm_tar stats - mean:", fm_tar.mean().item(), "std:", fm_tar.std().item())
     weight = -torch.cosine_similarity(fm_ref, fm_tar, dim=1)
-    return torch.exp(weight)  # with - is for min tree
+    print("- cosine sim stats - mean:", weight.mean().item(), "std:", weight.std().item())
+    print("- cosine sim contains NaN:", torch.isnan(weight).any().item())
+    print("- cosine sim contains Inf:", torch.isinf(weight).any().item())
+    result = torch.exp(weight)  # with - is for min tree
+    print("- exp result stats - mean:", result.mean().item(), "std:", result.std().item())
+    print("- exp result contains NaN:", torch.isnan(result).any().item())
+    print("- exp result contains Inf:", torch.isinf(result).any().item())
+    if torch.isnan(result).any() or torch.isinf(result).any():
+        print("- First NaN/Inf positions:", torch.where(torch.isnan(result) | torch.isinf(result)))
+    return result
 
 
 def batch_index_opr(data, index):
     with torch.no_grad():
         channel = data.shape[1]
         index = index.unsqueeze(1).expand(-1, channel, -1).long()
+        print("\nDebug batch_index_opr:")
+        print("- data shape:", data.shape)
+        print("- index shape:", index.shape)
+        print("- index min/max:", index.min().item(), index.max().item())
+        print("- data stats - mean:", data.mean().item(), "std:", data.std().item())
+        print("- data contains NaN:", torch.isnan(data).any().item())
+        print("- data contains Inf:", torch.isinf(data).any().item())
+        if torch.isnan(data).any() or torch.isinf(data).any():
+            print("- First NaN/Inf positions:", torch.where(torch.isnan(data) | torch.isinf(data)))
     data = torch.gather(data, 2, index)
+    print("- output stats - mean:", data.mean().item(), "std:", data.std().item())
+    print("- output contains NaN:", torch.isnan(data).any().item())
+    print("- output contains Inf:", torch.isinf(data).any().item())
+    if torch.isnan(data).any() or torch.isinf(data).any():
+        print("- First NaN/Inf positions in output:", torch.where(torch.isnan(data) | torch.isinf(data)))
     return data
 
 
@@ -175,8 +203,14 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print("\nInput weights to MST:")
                 print(tree_weight)
 
+            # Returns the edges that from the MST
+            # mst(edges, weight) -> edges_out
+            # edges is [batch_size, num_edges, 2]
+            # weight is [batch_size, num_edges]
+            # edges_out is [batch_size, num_vertices - 1, 2]
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
+
             # Print the resulting MST (only for first iteration)
             if tree_scanning_algorithm.iteration_count == 1:
                 print("\nResulting MST edges:")

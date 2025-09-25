@@ -20,48 +20,54 @@ def _save_edge_info(tree: torch.Tensor, pairs: torch.Tensor, weights: torch.Tens
     out_dir = os.path.join(base_dir, "outputs", case_dir)
     os.makedirs(out_dir, exist_ok=True)
     
-    # Process only the first batch for simplicity
+    # Process all batches
     if tree.shape[0] > 0:
-        batch_idx = 0
-        tree_b = tree[batch_idx]
-        weights_b = weights[batch_idx]
-        pruned_b = pruned[batch_idx]
-        
-        # Create a mapping from edge pairs to weights
-        pair_to_weight = {}
-        for i, (u, v) in enumerate(pairs.tolist()):
-            pair_to_weight[(u, v)] = weights_b[i].item()
-            pair_to_weight[(v, u)] = weights_b[i].item()  # bidirectional
-        
-        # Save raw data to file
         analysis_file = os.path.join(out_dir, "edge_analysis.md")
         with open(analysis_file, 'w') as f:
-            # Get original MST edges and weights
-            original_edges_list = [e for e in tree_b.tolist() if not (e[0] == 0 and e[1] == 0)]
-            original_weights_list = [round(pair_to_weight.get((u, v), 0.0), 4) for u, v in original_edges_list]
+            for batch_idx in range(tree.shape[0]):
+                tree_b = tree[batch_idx]
+                weights_b = weights[batch_idx]
+                pruned_b = pruned[batch_idx]
+                
+                # Create a mapping from edge pairs to weights
+                pair_to_weight = {}
+                for i, (u, v) in enumerate(pairs.tolist()):
+                    pair_to_weight[(u, v)] = weights_b[i].item()
+                    pair_to_weight[(v, u)] = weights_b[i].item()  # bidirectional
+                
+                # Write batch header
+                f.write(f"\n## Batch {batch_idx}\n\n")
+                
+                # Get original MST edges and weights
+                original_edges_list = [e for e in tree_b.tolist() if not (e[0] == 0 and e[1] == 0)]
+                original_weights_list = [round(pair_to_weight.get((u, v), 0.0), 4) for u, v in original_edges_list]
+                
+                # Get pruned MST edges and weights
+                pruned_edges_list = [e for e in pruned_b.tolist() if not (e[0] == 0 and e[1] == 0)]
+                pruned_weights_list = [round(pair_to_weight.get((u, v), 0.0), 4) for u, v in pruned_edges_list]
+                
+                # Create markdown table: Original edges, Original weights, Pruned edges, Pruned weights
+                f.write("| Original Edges | Original Weights | Pruned Edges | Pruned Weights |\n")
+                f.write("|----------------|------------------|--------------|----------------|\n")
+                
+                # Find the maximum length to pad shorter lists
+                max_len = max(len(original_edges_list), len(pruned_edges_list))
+                
+                # Pad shorter list with empty strings
+                original_edges_padded = original_edges_list + [""] * (max_len - len(original_edges_list))
+                original_weights_padded = original_weights_list + [""] * (max_len - len(original_weights_list))
+                pruned_edges_padded = pruned_edges_list + [""] * (max_len - len(pruned_edges_list))
+                pruned_weights_padded = pruned_weights_list + [""] * (max_len - len(pruned_weights_list))
+                
+                # Write each row
+                for i in range(max_len):
+                    f.write(f"| {original_edges_padded[i]} | {original_weights_padded[i]} | {pruned_edges_padded[i]} | {pruned_weights_padded[i]} |\n")
+                
+                # Add a separator between batches
+                if batch_idx < tree.shape[0] - 1:
+                    f.write("\n---\n")
             
-            # Get pruned MST edges and weights
-            pruned_edges_list = [e for e in pruned_b.tolist() if not (e[0] == 0 and e[1] == 0)]
-            pruned_weights_list = [round(pair_to_weight.get((u, v), 0.0), 4) for u, v in pruned_edges_list]
-            
-            # Create markdown table: Original edges, Original weights, Pruned edges, Pruned weights
-            f.write("| Original Edges | Original Weights | Pruned Edges | Pruned Weights |\n")
-            f.write("|----------------|------------------|--------------|----------------|\n")
-            
-            # Find the maximum length to pad shorter lists
-            max_len = max(len(original_edges_list), len(pruned_edges_list))
-            
-            # Pad shorter list with empty strings
-            original_edges_padded = original_edges_list + [""] * (max_len - len(original_edges_list))
-            original_weights_padded = original_weights_list + [""] * (max_len - len(original_weights_list))
-            pruned_edges_padded = pruned_edges_list + [""] * (max_len - len(pruned_edges_list))
-            pruned_weights_padded = pruned_weights_list + [""] * (max_len - len(pruned_weights_list))
-            
-            # Write each row
-            for i in range(max_len):
-                f.write(f"| {original_edges_padded[i]} | {original_weights_padded[i]} | {pruned_edges_padded[i]} | {pruned_weights_padded[i]} |\n")
-        
-        print(f"\nSaved raw edge data to: {analysis_file}")
+            print(f"\nSaved raw edge data to: {analysis_file}")
 
 
 def _safe_draw(edges_tensor: torch.Tensor, case_dir: str, file_name: str):
@@ -117,6 +123,17 @@ def test_pruning_runs(case_fn):
     for b in range(B):
         _safe_draw(tree[b], case_name, f"b{b:02d}_original.png")
         _safe_draw(pruned[b], case_name, f"b{b:02d}_pruned.png")
+        
+    # Print batch 1 pruned edges if this is the batch test case
+    if case_name == "batch_test_case":
+        print("\nBatch 1 Pruned Edges:")
+        batch_idx = 1
+        pruned_b = pruned[batch_idx]
+        weights_b = weights[batch_idx]
+        
+        
+        print("pruned_b: ", pruned_b)
+        print("weights_b: ", weights_b)
 
 
 if __name__ == "__main__":
