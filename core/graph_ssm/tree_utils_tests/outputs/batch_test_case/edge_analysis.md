@@ -1,7 +1,4 @@
-
-## Batch 0
-
-| Original Edges | Original Weights | Padded Edges | Padded Weights |
+| Original Edges | Original Weights | Pruned Edges | Pruned Weights |
 |----------------|------------------|--------------|----------------|
 | [0, 2] | 0.3683 | [0, 2] | 0.3683 |
 | [1, 2] | 0.0 | [1, 2] | 0.0 |

@@ -9,6 +9,7 @@ from tree_utils import prune_tree_by_weight
 from tree_utils_tests.pruning_test_cases import (
     small_test_case,
     training_test_case,
+    batch_test_case,
 )
 
 
@@ -127,6 +128,9 @@ if __name__ == "__main__":
     
     print("\n=== Testing training_test_case ===")
     test_pruning_runs(training_test_case)
+
+    print("\n=== Testing batch_test_case ===")
+    test_pruning_runs(batch_test_case)
     
     print("\nAll tests completed!")
 

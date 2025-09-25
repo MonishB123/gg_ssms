@@ -156,6 +156,9 @@ def prune_tree_by_weight(
         [B, E_kept_max, 2] pruned & padded trees
     """
 
+    # Print the original pairs
+    print("Original pairs:")
+    print(original_pairs)
     # Print the tree
     print("Tree before pruning:")
     print(tree)
