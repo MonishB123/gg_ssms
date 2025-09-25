@@ -317,7 +317,7 @@ if __name__ == "__main__":
                         # Try to get just one value first
                         single_val = float(tensor[0,0,0])  # Convert to Python float without CPU transfer
                         print(f"2.2 First value: {single_val}")
-                        
+                        2
                         print("2.3 Checking single value...")
                         has_nan = torch.isnan(torch.tensor([single_val])).item()
                         has_inf = torch.isinf(torch.tensor([single_val])).item()
