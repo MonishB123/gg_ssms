@@ -196,10 +196,10 @@ def prune_tree_by_weight(
     save_edge_analysis(tree, result, original_pairs, weights)
 
     # Print the result
-    print("Edges after pruning:")
-    print(result)
-    print("Weights after pruning:")
-    print(weights)
+    # print("Edges after pruning:")
+    # print(result)
+    # print("Weights after pruning:")
+    # print(weights)
     
     # Check connectivity for each batch
     all_connected = True
