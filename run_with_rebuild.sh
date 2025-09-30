@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Use the PyTorch standard variable for compatibility
+export TORCH_CUDA_ARCH_LIST="8.9;9.0"
+
 # Activate venv
 source /opt/venv/bin/activate
 
