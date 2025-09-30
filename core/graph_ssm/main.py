@@ -235,46 +235,48 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # Only enable debug/connectivity check on first iteration
             is_first_iter = (tree_scanning_algorithm.iteration_count == 1)
             
-            # Always print for debugging (can remove later)
-            print(f"\n[Iteration {tree_scanning_algorithm.iteration_count}] About to call MST...")
             torch.cuda.synchronize()
-            
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
-            
             torch.cuda.synchronize()
-            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] MST completed")
 
-            # Print the resulting MST (only for first iteration)
             if is_first_iter:
                 print("\nResulting MST edges:")
-                print(tree.squeeze(0))  # Remove batch dimension for clearer printing
+                print(tree.squeeze(0))
             
-            # PRUNING DISABLED - causes BFS to hang due to padding creating self-loops
-            # TODO: Fix padding strategy in tree_utils.py to not create [0,0] or [-1,-1] edges
-            # pruning_threshold = 0.45
-            # 
-            # try:
-            #     tree = prune_tree_by_weight(
-            #         tree, pairs, tree_weight, pruning_threshold,
-            #         debug=is_first_iter,
-            #         check_connectivity=is_first_iter
-            #     )
-            #     print(f"[Iteration {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
-            # except Exception as e:
-            #     print(f"Error during pruning: {str(e)}")
-            #     raise
+            # Prune edges with weights above threshold
+            # High weight = high dissimilarity
+            # Padding now uses duplicate edges instead of [0,0] to avoid self-loops
+            pruning_threshold = 0.45
             
             if is_first_iter:
-                print(f"\n[DEBUG] Using unpruned MST tree")
+                print(f"\n[DEBUG] About to prune MST with threshold {pruning_threshold}")
             
-            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] About to call BFS...")
+            torch.cuda.synchronize()
+            try:
+                tree = prune_tree_by_weight(
+                    tree, pairs, tree_weight, pruning_threshold,
+                    debug=is_first_iter,
+                    check_connectivity=is_first_iter
+                )
+                torch.cuda.synchronize()
+                if is_first_iter:
+                    print(f"[DEBUG] Pruning completed, tree shape: {tree.shape}")
+            except Exception as e:
+                print(f"Error during pruning: {str(e)}")
+                raise
             
-            # Force CUDA sync before BFS
+            if is_first_iter:
+                print(f"\nPruned tree (threshold={pruning_threshold}):")
+                print(tree.squeeze(0))
+            
+            if is_first_iter:
+                print("\nStarting BFS operation...")
+                print(f"Input tree shape to BFS: {tree.shape}")
+                print(f"context_len: {context_len}")
+            
             torch.cuda.synchronize()
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             torch.cuda.synchronize()
-            
-            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] BFS completed")
             
             if is_first_iter:
                 print("BFS completed successfully")

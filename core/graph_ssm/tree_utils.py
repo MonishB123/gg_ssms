@@ -218,13 +218,16 @@ def prune_tree_by_weight(
         pruned_trees.append(edges_b[keep_mask])
 
     # Pad to same length across batch (stay on GPU)
-    # TODO: Current padding with [0, 0] creates self-loops that break BFS
-    # Need to find a better padding strategy (e.g., duplicate last edge, or use node indices outside valid range)
+    # Pad by duplicating the last valid edge instead of using [0,0]
+    # This avoids creating self-loops that cause BFS to hang
     max_edges = max((t.shape[0] for t in pruned_trees), default=0)
     padded = []
     for t in pruned_trees:
         if t.shape[0] < max_edges:
-            pad = torch.zeros((max_edges - t.shape[0], 2), dtype=t.dtype, device=t.device)
+            # Duplicate the last valid edge for padding
+            last_edge = t[-1:] if t.shape[0] > 0 else torch.zeros((1, 2), dtype=t.dtype, device=t.device)
+            num_pads = max_edges - t.shape[0]
+            pad = last_edge.repeat(num_pads, 1)
             t = torch.cat([t, pad], dim=0)
         padded.append(t)
 
