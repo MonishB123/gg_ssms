@@ -87,7 +87,6 @@ def manhattan_distance(fm_ref, fm_tar):
     return torch.exp(-weight)  # with - is for max tree
 
 
-
 def batch_index_opr(data, index):
     with torch.no_grad():
         channel = data.shape[1]
@@ -149,10 +148,16 @@ def tree_scanning_algorithm(self, input_states, context_len):
     sorted_index1, sorted_parent1, sorted_child1 = bfs(tree, 4)
 
     ### build tree by feature
+    if isinstance(context_len, int):
+        context_len = [context_len] * batch_size
     try:
         context_len = min(context_len)
     except:
         context_len = context_len
+
+    # Select distance function dynamically
+    distance_fn = self.get_distance_fn()
+
     with torch.no_grad():
 
         def generate_pairs(L, prompt_len):
@@ -177,7 +182,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
             data1 = torch.index_select(feature_in, 2, pairs[:, 0])
             data2 = torch.index_select(feature_in, 2, pairs[:, 1])
             # import pdb;pdb.set_trace()
-            tree_weight = cosine_distance(data1, data2)
+            tree_weight = distance_fn(data1, data2)
 
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
@@ -188,7 +193,6 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 sorted_child1,
             )
 
-        # import pdb;pdb.set_trace()
     # import pdb;pdb.set_trace()
     feature_out1 = refine(
         feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
@@ -241,6 +245,7 @@ class GraphSSM(nn.Module):
         layer_idx=None,
         device=None,
         dtype=None,
+        distance_metric='cosine',  # Added distance metric
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
@@ -317,6 +322,19 @@ class GraphSSM(nn.Module):
             self.d_inner, self.d_model, bias=bias, **factory_kwargs
         )
 
+        # Distance metric
+        self.distance_metric = distance_metric
+        self.distance_functions = {
+            'norm2': norm2_distance,
+            'cosine': cosine_distance,
+            'gaussian': gaussian_distance,
+            'euclidean': euclidean_distance,
+            'manhattan': manhattan_distance
+        }
+
+    def get_distance_fn(self):
+        return self.distance_functions.get(self.distance_metric, cosine_distance)
+
     def forward(self, input_states, context_len):
         return tree_scanning_algorithm(self, input_states, context_len)
 
@@ -332,7 +350,7 @@ if __name__ == "__main__":
     x = torch.randn(batch_size, seq_len, d_model)
 
     # Instantiate the GraphSSM layer
-    model = GraphSSM(d_model=d_model)
+    model = GraphSSM(d_model=d_model, distance_metric='euclidean')
 
     # Forward pass
     output = model(x, context_len)
