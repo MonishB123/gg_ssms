@@ -269,19 +269,20 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print(f"Error during pruning: {str(e)}")
                 raise
             
+            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] After pruning exception block")
+            
             if tree_scanning_algorithm.iteration_count == 1:
                 print(f"\nPruned tree (threshold={pruning_threshold}):")
                 print(tree.squeeze(0))
             
-            if is_first_iter:
-                print("\nStarting BFS operation...")
-                print(f"Input tree shape to BFS: {tree.shape}")
-                print(f"context_len: {context_len}")
+            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] About to call BFS...")
             
             # Force CUDA sync before BFS
             torch.cuda.synchronize()
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             torch.cuda.synchronize()
+            
+            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] BFS completed")
             
             if is_first_iter:
                 print("BFS completed successfully")
