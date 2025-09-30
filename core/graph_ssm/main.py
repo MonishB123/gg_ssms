@@ -235,15 +235,14 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # Only enable debug/connectivity check on first iteration
             is_first_iter = (tree_scanning_algorithm.iteration_count == 1)
             
-            if is_first_iter:
-                print("\nAbout to call MST...")
-                torch.cuda.synchronize()
+            # Always print for debugging (can remove later)
+            print(f"\n[Iteration {tree_scanning_algorithm.iteration_count}] About to call MST...")
+            torch.cuda.synchronize()
             
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
-            if is_first_iter:
-                torch.cuda.synchronize()
-                print("MST completed")
+            torch.cuda.synchronize()
+            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] MST completed")
 
             # Print the resulting MST (only for first iteration)
             if is_first_iter:
@@ -254,10 +253,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # high weight = high disimilarity
             pruning_threshold = 0.45
             
-            if is_first_iter:
-                print(f"\nUsing pruning threshold: {pruning_threshold}")
-                print("About to call prune_tree_by_weight...")
-                torch.cuda.synchronize()
+            # Always print for debugging
+            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] About to call prune_tree_by_weight...")
+            torch.cuda.synchronize()
             
             try:
                 tree = prune_tree_by_weight(
@@ -265,10 +263,8 @@ def tree_scanning_algorithm(self, input_states, context_len):
                     debug=is_first_iter,  # Only save analysis on first iteration
                     check_connectivity=is_first_iter  # Only check connectivity on first iteration
                 )
-                if is_first_iter:
-                    torch.cuda.synchronize()
-                    print("Pruning completed successfully")
-                    print(f"Tree shape after pruning: {tree.shape}")
+                torch.cuda.synchronize()
+                print(f"[Iteration {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
             except Exception as e:
                 print(f"Error during pruning: {str(e)}")
                 raise
