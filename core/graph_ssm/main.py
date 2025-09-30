@@ -245,32 +245,32 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print("\nResulting MST edges:")
                 print(tree.squeeze(0))
             
-            # TEMPORARILY DISABLE PRUNING TO TEST IF IT'S CAUSING THE HANG
-            # The duplicate-edge padding strategy might be creating invalid tree structures
-            # that break the refine CUDA kernel on iteration 2
+            # Prune a fixed number of weakest leaf edges
+            # This ensures all batches have the same # of edges (no padding needed!)
+            # MST produces 39 edges for 40 nodes, so we can safely remove a few
+            num_edges_to_remove = 5  # Remove the 5 weakest leaf edges
             
-            # pruning_threshold = 0.45
-            # 
-            # print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to prune (threshold={pruning_threshold})...")
-            # torch.cuda.synchronize()
-            # 
-            # try:
-            #     tree = prune_tree_by_weight(
-            #         tree, pairs, tree_weight, pruning_threshold,
-            #         debug=is_first_iter,
-            #         check_connectivity=is_first_iter
-            #     )
-            #     torch.cuda.synchronize()
-            #     print(f"[Iter {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
-            # except Exception as e:
-            #     print(f"[Iter {tree_scanning_algorithm.iteration_count}] Error during pruning: {str(e)}")
-            #     raise
-            # 
-            # if is_first_iter:
-            #     print(f"\nPruned tree (threshold={pruning_threshold}):")
-            #     print(tree.squeeze(0))
+            if is_first_iter:
+                print(f"\n[DEBUG] About to prune {num_edges_to_remove} weakest leaf edges...")
             
-            print(f"[Iter {tree_scanning_algorithm.iteration_count}] Pruning DISABLED for testing")
+            torch.cuda.synchronize()
+            try:
+                from core.graph_ssm.tree_utils import prune_tree_by_count
+                tree = prune_tree_by_count(
+                    tree, pairs, tree_weight, num_edges_to_remove,
+                    debug=is_first_iter,
+                    check_connectivity=is_first_iter
+                )
+                torch.cuda.synchronize()
+                if is_first_iter:
+                    print(f"[DEBUG] Pruning completed, tree shape: {tree.shape}")
+            except Exception as e:
+                print(f"[Iter {tree_scanning_algorithm.iteration_count}] Error during pruning: {str(e)}")
+                raise
+            
+            if is_first_iter:
+                print(f"\nPruned tree (removed {num_edges_to_remove} weakest leaf edges):")
+                print(tree.squeeze(0))
             
             if is_first_iter:
                 print("\nStarting BFS operation...")

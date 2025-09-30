@@ -165,6 +165,97 @@ def save_edge_analysis(tree: torch.Tensor, result: torch.Tensor, original_pairs:
         
         print(f"\nSaved padded edge analysis to: {analysis_file}")
 
+def prune_tree_by_count(
+    tree: torch.Tensor,
+    original_pairs: torch.Tensor,
+    weights: torch.Tensor,
+    num_edges_to_remove: int,
+    debug: bool = False,
+    check_connectivity: bool = False
+):
+    """Prune a fixed number of weakest leaf edges from each batch.
+       Removes the same number of edges from ALL batches (no padding needed!).
+    Args:
+        tree: [B, E_mst, 2] MST edges (undirected)
+        original_pairs: [E_orig, 2]
+        weights: [B, E_orig]
+        num_edges_to_remove: int - number of weakest leaf edges to remove
+        debug: If True, print debug info and save analysis (slow!)
+        check_connectivity: If True, check connectivity (slow!)
+    Returns:
+        [B, E_kept, 2] pruned trees (NO PADDING - all same size!)
+    """
+    assert tree.dim() == 3 and tree.size(-1) == 2
+    assert weights.dim() == 2
+    device = tree.device
+    
+    # Cache lookup table - only build once per unique original_pairs tensor
+    if not hasattr(prune_tree_by_count, '_lookup_cache'):
+        prune_tree_by_count._lookup_cache = {}
+    
+    # Use id of original_pairs as cache key
+    cache_key = id(original_pairs)
+    if cache_key not in prune_tree_by_count._lookup_cache:
+        lookup_table = _build_pair_index_gpu(original_pairs)
+        prune_tree_by_count._lookup_cache[cache_key] = lookup_table
+    else:
+        lookup_table = prune_tree_by_count._lookup_cache[cache_key]
+
+    # Process all batches
+    pruned_trees = []
+    for b in range(tree.shape[0]):
+        edges_b = tree[b]
+        
+        # GPU-native weight lookup
+        ew = _edge_weights_for_batch_edges_gpu(edges_b, weights[b], lookup_table)
+
+        # GPU-native leaf mask
+        leaf_mask = _leaf_mask_for_edges(edges_b)
+        
+        # Only consider leaf edges for pruning
+        leaf_indices = torch.where(leaf_mask)[0]
+        
+        if len(leaf_indices) > num_edges_to_remove:
+            # Get weights of leaf edges
+            leaf_weights = ew[leaf_indices]
+            
+            # Find the weakest num_edges_to_remove leaf edges
+            _, sorted_idx = torch.sort(leaf_weights, descending=True)  # Highest weight first
+            edges_to_remove = leaf_indices[sorted_idx[:num_edges_to_remove]]
+            
+            # Create keep mask
+            keep_mask = torch.ones(edges_b.shape[0], dtype=torch.bool, device=device)
+            keep_mask[edges_to_remove] = False
+            
+            pruned = edges_b[keep_mask]
+        else:
+            # Not enough leaf edges to prune, keep all
+            pruned = edges_b
+        
+        pruned_trees.append(pruned)
+    
+    # Stack directly - all should have same size now
+    result = torch.stack(pruned_trees)
+    
+    # Only do expensive operations if debug mode is on
+    if debug:
+        save_edge_analysis(tree, result, original_pairs, weights)
+    
+    # Only check connectivity if requested (expensive!)
+    if check_connectivity:
+        all_connected = True
+        for b in range(result.shape[0]):
+            if not _is_connected(result[b]):
+                print(f"\nWARNING: Tree in batch {b} is disconnected after pruning!")
+                print("This may indicate too many edges were removed.")
+                all_connected = False
+        
+        if all_connected:
+            print("\nAll trees remain connected after pruning.")
+    
+    return result
+
+
 def prune_tree_by_weight(
     tree: torch.Tensor,
     original_pairs: torch.Tensor,
@@ -175,6 +266,7 @@ def prune_tree_by_weight(
 ):
     """Prune edges with weight >= threshold, leaf-only (single pass).
        Only prune edges that are leaves AND >= threshold.
+       WARNING: This creates variable-length trees that require padding (can break refine!)
     Args:
         tree: [B, E_mst, 2] MST edges (undirected)
         original_pairs: [E_orig, 2]
