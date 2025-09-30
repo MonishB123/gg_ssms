@@ -218,6 +218,8 @@ def prune_tree_by_weight(
         pruned_trees.append(edges_b[keep_mask])
 
     # Pad to same length across batch (stay on GPU)
+    # TODO: Current padding with [0, 0] creates self-loops that break BFS
+    # Need to find a better padding strategy (e.g., duplicate last edge, or use node indices outside valid range)
     max_edges = max((t.shape[0] for t in pruned_trees), default=0)
     padded = []
     for t in pruned_trees:

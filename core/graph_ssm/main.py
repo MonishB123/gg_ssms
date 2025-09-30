@@ -249,31 +249,23 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print("\nResulting MST edges:")
                 print(tree.squeeze(0))  # Remove batch dimension for clearer printing
             
-            # Prune edges with weights above threshold
-            # high weight = high disimilarity
-            pruning_threshold = 0.45
+            # PRUNING DISABLED - causes BFS to hang due to padding creating self-loops
+            # TODO: Fix padding strategy in tree_utils.py to not create [0,0] or [-1,-1] edges
+            # pruning_threshold = 0.45
+            # 
+            # try:
+            #     tree = prune_tree_by_weight(
+            #         tree, pairs, tree_weight, pruning_threshold,
+            #         debug=is_first_iter,
+            #         check_connectivity=is_first_iter
+            #     )
+            #     print(f"[Iteration {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
+            # except Exception as e:
+            #     print(f"Error during pruning: {str(e)}")
+            #     raise
             
-            # Always print for debugging
-            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] About to call prune_tree_by_weight...")
-            torch.cuda.synchronize()
-            
-            try:
-                tree = prune_tree_by_weight(
-                    tree, pairs, tree_weight, pruning_threshold,
-                    debug=is_first_iter,  # Only save analysis on first iteration
-                    check_connectivity=is_first_iter  # Only check connectivity on first iteration
-                )
-                torch.cuda.synchronize()
-                print(f"[Iteration {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
-            except Exception as e:
-                print(f"Error during pruning: {str(e)}")
-                raise
-            
-            print(f"[Iteration {tree_scanning_algorithm.iteration_count}] After pruning exception block")
-            
-            if tree_scanning_algorithm.iteration_count == 1:
-                print(f"\nPruned tree (threshold={pruning_threshold}):")
-                print(tree.squeeze(0))
+            if is_first_iter:
+                print(f"\n[DEBUG] Using unpruned MST tree")
             
             print(f"[Iteration {tree_scanning_algorithm.iteration_count}] About to call BFS...")
             
