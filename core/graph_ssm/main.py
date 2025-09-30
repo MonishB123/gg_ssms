@@ -316,11 +316,13 @@ def tree_scanning_algorithm(self, input_states, context_len):
         print(f"sorted_parent1 shape: {sorted_parent1.shape}")
         print(f"sorted_child1 shape: {sorted_child1.shape}")
     
+    print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to call refine #1...")
     torch.cuda.synchronize()
     feature_out1 = refine(
         feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
     )
     torch.cuda.synchronize()
+    print(f"[Iter {tree_scanning_algorithm.iteration_count}] Refine #1 completed")
     
     if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
         print(f"feature_out1 shape after first refine: {feature_out1.shape}")
@@ -328,7 +330,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
         print(f"weight shape before batch_index_opr: {weight.shape}")
         print(f"sorted_index2 shape: {sorted_index2.shape}")
     
+    print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to call batch_index_opr...")
     edge_weight = batch_index_opr(weight, sorted_index2, debug=(hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1))
+    print(f"[Iter {tree_scanning_algorithm.iteration_count}] batch_index_opr completed")
     
     if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
         print(f"edge_weight shape after batch_index_opr: {edge_weight.shape}")
@@ -339,11 +343,13 @@ def tree_scanning_algorithm(self, input_states, context_len):
         print(f"sorted_parent2 shape: {sorted_parent2.shape}")
         print(f"sorted_child2 shape: {sorted_child2.shape}")
     
+    print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to call refine #2...")
     torch.cuda.synchronize()
     feature_out2 = refine(
         feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
     )
     torch.cuda.synchronize()
+    print(f"[Iter {tree_scanning_algorithm.iteration_count}] Refine #2 completed")
     
     if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
         print(f"feature_out2 shape after second refine: {feature_out2.shape}")
