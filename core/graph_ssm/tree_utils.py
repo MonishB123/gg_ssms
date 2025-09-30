@@ -2,22 +2,26 @@ import torch
 import os
 
 def _build_pair_index_gpu(original_pairs: torch.Tensor):
-    """Build edge index lookup on GPU using hash-based approach.
+    """Build edge index lookup on GPU using fully vectorized operations.
     Returns a tensor that can be used for vectorized lookups."""
-    # For each edge in original_pairs, create both (u,v) and (v,u) mappings
-    # We'll use a simple approach: create a lookup tensor
+    # Fully vectorized - no Python loops!
     num_pairs = original_pairs.shape[0]
-    max_node = original_pairs.max().item() + 1
+    max_node = original_pairs.max().item() + 1  # Only one CPU sync, unavoidable
     
     # Create a 2D lookup table [max_node, max_node] -> index
     # Initialize with -1 (invalid)
     lookup = torch.full((max_node, max_node), -1, dtype=torch.long, device=original_pairs.device)
     
-    # Fill in the lookup table for both directions
-    for i in range(num_pairs):
-        u, v = original_pairs[i]
-        lookup[u, v] = i
-        lookup[v, u] = i
+    # Create index tensor [0, 1, 2, ..., num_pairs-1]
+    indices = torch.arange(num_pairs, dtype=torch.long, device=original_pairs.device)
+    
+    # Extract u and v columns (stays on GPU)
+    u = original_pairs[:, 0].long()
+    v = original_pairs[:, 1].long()
+    
+    # Vectorized assignment for both directions
+    lookup[u, v] = indices  # (u,v) -> index
+    lookup[v, u] = indices  # (v,u) -> index (bidirectional)
     
     return lookup
 
