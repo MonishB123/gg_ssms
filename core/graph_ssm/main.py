@@ -86,45 +86,48 @@ def cosine_distance(fm_ref, fm_tar):
     return result
 
 
-def batch_index_opr(data, index):
+def batch_index_opr(data, index, debug=False):
     with torch.no_grad():
         channel = data.shape[1]
         index = index.unsqueeze(1).expand(-1, channel, -1).long()
-        print("\nDebug batch_index_opr:")
-        print("- data shape:", data.shape)
-        print("- index shape:", index.shape)
         
-        # Force CUDA synchronization before accessing values
-        try:
-            torch.cuda.synchronize()
-            idx_min = index.min().item()
-            idx_max = index.max().item()
-            print(f"- index min/max: {idx_min} {idx_max}")
-        except Exception as e:
-            print(f"- Error getting index min/max: {e}")
+        if debug:
+            print("\nDebug batch_index_opr:")
+            print("- data shape:", data.shape)
+            print("- index shape:", index.shape)
             
-        try:
-            torch.cuda.synchronize()
-            data_mean = data.mean().item()
-            data_std = data.std().item()
-            print(f"- data stats - mean: {data_mean} std: {data_std}")
-        except Exception as e:
-            print(f"- Error getting data stats: {e}")
-            
-        print("- data contains NaN:", torch.isnan(data).any().item())
-        print("- data contains Inf:", torch.isinf(data).any().item())
-        if torch.isnan(data).any() or torch.isinf(data).any():
-            print("- First NaN/Inf positions:", torch.where(torch.isnan(data) | torch.isinf(data)))
+            # Force CUDA synchronization before accessing values
+            try:
+                torch.cuda.synchronize()
+                idx_min = index.min().item()
+                idx_max = index.max().item()
+                print(f"- index min/max: {idx_min} {idx_max}")
+            except Exception as e:
+                print(f"- Error getting index min/max: {e}")
+                
+            try:
+                torch.cuda.synchronize()
+                data_mean = data.mean().item()
+                data_std = data.std().item()
+                print(f"- data stats - mean: {data_mean} std: {data_std}")
+            except Exception as e:
+                print(f"- Error getting data stats: {e}")
+                
+            print("- data contains NaN:", torch.isnan(data).any().item())
+            print("- data contains Inf:", torch.isinf(data).any().item())
+            if torch.isnan(data).any() or torch.isinf(data).any():
+                print("- First NaN/Inf positions:", torch.where(torch.isnan(data) | torch.isinf(data)))
             
     torch.cuda.synchronize()  # Ensure gather completes
     data = torch.gather(data, 2, index)
     torch.cuda.synchronize()
     
-    print("- output stats - mean:", data.mean().item(), "std:", data.std().item())
-    print("- output contains NaN:", torch.isnan(data).any().item())
-    print("- output contains Inf:", torch.isinf(data).any().item())
-    if torch.isnan(data).any() or torch.isinf(data).any():
-        print("- First NaN/Inf positions in output:", torch.where(torch.isnan(data) | torch.isinf(data)))
+    if debug:
+        print("- output stats - mean:", data.mean().item(), "std:", data.std().item())
+        print("- output contains NaN:", torch.isnan(data).any().item())
+        print("- output contains Inf:", torch.isinf(data).any().item())
+        if torch.isnan(data).any() or torch.isinf(data).any():
+            print("- First NaN/Inf positions in output:", torch.where(torch.isnan(data) | torch.isinf(data)))
     return data
 
 
@@ -239,12 +242,21 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # Prune edges with weights above threshold
             # high weight = high disimilarity
             pruning_threshold = 0.45
-            print(f"Using pruning threshold: {pruning_threshold}")
+            
+            # Only enable debug/connectivity check on first iteration
+            is_first_iter = (tree_scanning_algorithm.iteration_count == 1)
+            if is_first_iter:
+                print(f"Using pruning threshold: {pruning_threshold}")
             
             try:
-                tree = prune_tree_by_weight(tree, pairs, tree_weight, pruning_threshold)
-                print("Pruning completed successfully")
-                print(f"Tree shape after pruning: {tree.shape}")
+                tree = prune_tree_by_weight(
+                    tree, pairs, tree_weight, pruning_threshold,
+                    debug=is_first_iter,  # Only save analysis on first iteration
+                    check_connectivity=is_first_iter  # Only check connectivity on first iteration
+                )
+                if is_first_iter:
+                    print("Pruning completed successfully")
+                    print(f"Tree shape after pruning: {tree.shape}")
             except Exception as e:
                 print(f"Error during pruning: {str(e)}")
                 raise
@@ -253,30 +265,32 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print(f"\nPruned tree (threshold={pruning_threshold}):")
                 print(tree.squeeze(0))
             
-            print("\nStarting BFS operation...")
-            print(f"Input tree shape to BFS: {tree.shape}")
-            print(f"context_len: {context_len}")
+            if is_first_iter:
+                print("\nStarting BFS operation...")
+                print(f"Input tree shape to BFS: {tree.shape}")
+                print(f"context_len: {context_len}")
             
             # Force CUDA sync before BFS
             torch.cuda.synchronize()
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             torch.cuda.synchronize()
             
-            print("BFS completed successfully")
-            print(f"sorted_index2 shape: {sorted_index2.shape}")
-            print(f"sorted_parent2 shape: {sorted_parent2.shape}")
-            print(f"sorted_child2 shape: {sorted_child2.shape}")
-            
-            # Validate sorted_index2
-            try:
-                torch.cuda.synchronize()
-                idx2_min = sorted_index2.min().item()
-                idx2_max = sorted_index2.max().item()
-                print(f"sorted_index2 range: [{idx2_min}, {idx2_max}]")
-                if idx2_min < 0 or idx2_max >= context_len:
-                    print(f"WARNING: sorted_index2 has invalid indices! Expected [0, {context_len-1}], got [{idx2_min}, {idx2_max}]")
-            except Exception as e:
-                print(f"Error validating sorted_index2: {e}")
+            if is_first_iter:
+                print("BFS completed successfully")
+                print(f"sorted_index2 shape: {sorted_index2.shape}")
+                print(f"sorted_parent2 shape: {sorted_parent2.shape}")
+                print(f"sorted_child2 shape: {sorted_child2.shape}")
+                
+                # Validate sorted_index2
+                try:
+                    torch.cuda.synchronize()
+                    idx2_min = sorted_index2.min().item()
+                    idx2_max = sorted_index2.max().item()
+                    print(f"sorted_index2 range: [{idx2_min}, {idx2_max}]")
+                    if idx2_min < 0 or idx2_max >= context_len:
+                        print(f"WARNING: sorted_index2 has invalid indices! Expected [0, {context_len-1}], got [{idx2_min}, {idx2_max}]")
+                except Exception as e:
+                    print(f"Error validating sorted_index2: {e}")
         else:
             print("\nSkipping BFS, using sorted indices from first tree...")
             sorted_index2, sorted_parent2, sorted_child2 = (
@@ -288,45 +302,54 @@ def tree_scanning_algorithm(self, input_states, context_len):
 
         # import pdb;pdb.set_trace()
     # import pdb;pdb.set_trace()
-    print("\nStarting first refine operation...")
-    print(f"feature_in shape: {feature_in.shape}")
-    print(f"weight shape: {weight.shape}")
-    print(f"sorted_index1 shape: {sorted_index1.shape}")
-    print(f"sorted_parent1 shape: {sorted_parent1.shape}")
-    print(f"sorted_child1 shape: {sorted_child1.shape}")
+    # Only print debug info on first iteration
+    if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
+        print("\nStarting first refine operation...")
+        print(f"feature_in shape: {feature_in.shape}")
+        print(f"weight shape: {weight.shape}")
+        print(f"sorted_index1 shape: {sorted_index1.shape}")
+        print(f"sorted_parent1 shape: {sorted_parent1.shape}")
+        print(f"sorted_child1 shape: {sorted_child1.shape}")
     
     torch.cuda.synchronize()
     feature_out1 = refine(
         feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
     )
     torch.cuda.synchronize()
-    print(f"feature_out1 shape after first refine: {feature_out1.shape}")
     
-    print("\nStarting batch_index_opr...")
-    print(f"weight shape before batch_index_opr: {weight.shape}")
-    print(f"sorted_index2 shape: {sorted_index2.shape}")
-    edge_weight = batch_index_opr(weight, sorted_index2)
-    print(f"edge_weight shape after batch_index_opr: {edge_weight.shape}")
+    if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
+        print(f"feature_out1 shape after first refine: {feature_out1.shape}")
+        print("\nStarting batch_index_opr...")
+        print(f"weight shape before batch_index_opr: {weight.shape}")
+        print(f"sorted_index2 shape: {sorted_index2.shape}")
     
-    print("\nStarting second refine operation...")
-    print(f"feature_in shape: {feature_in.shape}")
-    print(f"edge_weight shape: {edge_weight.shape}")
-    print(f"sorted_index2 shape: {sorted_index2.shape}")
-    print(f"sorted_parent2 shape: {sorted_parent2.shape}")
-    print(f"sorted_child2 shape: {sorted_child2.shape}")
+    edge_weight = batch_index_opr(weight, sorted_index2, debug=(hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1))
+    
+    if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
+        print(f"edge_weight shape after batch_index_opr: {edge_weight.shape}")
+        print("\nStarting second refine operation...")
+        print(f"feature_in shape: {feature_in.shape}")
+        print(f"edge_weight shape: {edge_weight.shape}")
+        print(f"sorted_index2 shape: {sorted_index2.shape}")
+        print(f"sorted_parent2 shape: {sorted_parent2.shape}")
+        print(f"sorted_child2 shape: {sorted_child2.shape}")
     
     torch.cuda.synchronize()
     feature_out2 = refine(
         feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
     )
     torch.cuda.synchronize()
-    print(f"feature_out2 shape after second refine: {feature_out2.shape}")
     
-    print("\nCombining feature outputs...")
+    if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
+        print(f"feature_out2 shape after second refine: {feature_out2.shape}")
+        print("\nCombining feature outputs...")
+    
     feature_out = (
         feature_out2 * 0.3 + feature_out1
     )  # 0.3 is scaling factor (hyperparameter)
-    print(f"Final feature_out shape: {feature_out.shape}")
+    
+    if hasattr(tree_scanning_algorithm, 'iteration_count') and tree_scanning_algorithm.iteration_count == 1:
+        print(f"Final feature_out shape: {feature_out.shape}")
 
     print("\nStarting final feature transformations...")
     print("1. Flipping and rearranging feature_out...")
