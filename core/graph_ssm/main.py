@@ -245,29 +245,32 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print("\nResulting MST edges:")
                 print(tree.squeeze(0))
             
-            # Prune edges with weights above threshold
-            # High weight = high dissimilarity
-            # Padding now uses duplicate edges instead of [0,0] to avoid self-loops
-            pruning_threshold = 0.45
+            # TEMPORARILY DISABLE PRUNING TO TEST IF IT'S CAUSING THE HANG
+            # The duplicate-edge padding strategy might be creating invalid tree structures
+            # that break the refine CUDA kernel on iteration 2
             
-            print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to prune (threshold={pruning_threshold})...")
-            torch.cuda.synchronize()
+            # pruning_threshold = 0.45
+            # 
+            # print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to prune (threshold={pruning_threshold})...")
+            # torch.cuda.synchronize()
+            # 
+            # try:
+            #     tree = prune_tree_by_weight(
+            #         tree, pairs, tree_weight, pruning_threshold,
+            #         debug=is_first_iter,
+            #         check_connectivity=is_first_iter
+            #     )
+            #     torch.cuda.synchronize()
+            #     print(f"[Iter {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
+            # except Exception as e:
+            #     print(f"[Iter {tree_scanning_algorithm.iteration_count}] Error during pruning: {str(e)}")
+            #     raise
+            # 
+            # if is_first_iter:
+            #     print(f"\nPruned tree (threshold={pruning_threshold}):")
+            #     print(tree.squeeze(0))
             
-            try:
-                tree = prune_tree_by_weight(
-                    tree, pairs, tree_weight, pruning_threshold,
-                    debug=is_first_iter,
-                    check_connectivity=is_first_iter
-                )
-                torch.cuda.synchronize()
-                print(f"[Iter {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
-            except Exception as e:
-                print(f"[Iter {tree_scanning_algorithm.iteration_count}] Error during pruning: {str(e)}")
-                raise
-            
-            if is_first_iter:
-                print(f"\nPruned tree (threshold={pruning_threshold}):")
-                print(tree.squeeze(0))
+            print(f"[Iter {tree_scanning_algorithm.iteration_count}] Pruning DISABLED for testing")
             
             if is_first_iter:
                 print("\nStarting BFS operation...")
@@ -279,6 +282,24 @@ def tree_scanning_algorithm(self, input_states, context_len):
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             torch.cuda.synchronize()
             print(f"[Iter {tree_scanning_algorithm.iteration_count}] BFS completed")
+            
+            # Debug BFS output on iteration 2 to diagnose refine hang
+            if tree_scanning_algorithm.iteration_count == 2:
+                print(f"\n[DEBUG Iter 2] BFS output validation:")
+                print(f"  sorted_index2 shape: {sorted_index2.shape}")
+                try:
+                    torch.cuda.synchronize()
+                    idx2_min = sorted_index2.min().item()
+                    idx2_max = sorted_index2.max().item()
+                    print(f"  sorted_index2 range: [{idx2_min}, {idx2_max}]")
+                    print(f"  sorted_parent2 range: [{sorted_parent2.min().item()}, {sorted_parent2.max().item()}]")
+                    print(f"  sorted_child2 range: [{sorted_child2.min().item()}, {sorted_child2.max().item()}]")
+                    print(f"  sorted_child2 shape: {sorted_child2.shape}")
+                    # Check for issues
+                    if idx2_min < 0 or idx2_max >= context_len:
+                        print(f"  ERROR: Invalid sorted_index2 values!")
+                except Exception as e:
+                    print(f"  Error checking BFS output: {e}")
             
             if is_first_iter:
                 print("BFS completed successfully")
