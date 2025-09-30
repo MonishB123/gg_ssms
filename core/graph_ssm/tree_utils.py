@@ -201,8 +201,10 @@ def prune_tree_by_count(
     else:
         lookup_table = prune_tree_by_count._lookup_cache[cache_key]
 
-    # Process all batches
-    pruned_trees = []
+    # First pass: find minimum number of leaf edges across all batches
+    min_leaf_count = float('inf')
+    leaf_data = []  # Store (edges_b, ew, leaf_indices) for each batch
+    
     for b in range(tree.shape[0]):
         edges_b = tree[b]
         
@@ -215,13 +217,25 @@ def prune_tree_by_count(
         # Only consider leaf edges for pruning
         leaf_indices = torch.where(leaf_mask)[0]
         
-        if len(leaf_indices) > num_edges_to_remove:
+        leaf_data.append((edges_b, ew, leaf_indices))
+        min_leaf_count = min(min_leaf_count, len(leaf_indices))
+    
+    # Determine how many edges we can actually remove
+    actual_edges_to_remove = min(num_edges_to_remove, max(0, min_leaf_count - 1))  # Keep at least 1 leaf
+    
+    if actual_edges_to_remove < num_edges_to_remove and debug:
+        print(f"Warning: Can only remove {actual_edges_to_remove} edges (requested {num_edges_to_remove}, min leaf count: {min_leaf_count})")
+    
+    # Second pass: prune the same number from each batch
+    pruned_trees = []
+    for edges_b, ew, leaf_indices in leaf_data:
+        if actual_edges_to_remove > 0:
             # Get weights of leaf edges
             leaf_weights = ew[leaf_indices]
             
-            # Find the weakest num_edges_to_remove leaf edges
+            # Find the weakest actual_edges_to_remove leaf edges
             _, sorted_idx = torch.sort(leaf_weights, descending=True)  # Highest weight first
-            edges_to_remove = leaf_indices[sorted_idx[:num_edges_to_remove]]
+            edges_to_remove = leaf_indices[sorted_idx[:actual_edges_to_remove]]
             
             # Create keep mask
             keep_mask = torch.ones(edges_b.shape[0], dtype=torch.bool, device=device)
@@ -229,7 +243,7 @@ def prune_tree_by_count(
             
             pruned = edges_b[keep_mask]
         else:
-            # Not enough leaf edges to prune, keep all
+            # Can't prune safely, keep all edges
             pruned = edges_b
         
         pruned_trees.append(pruned)
