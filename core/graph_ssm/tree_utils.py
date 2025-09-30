@@ -214,18 +214,28 @@ def prune_tree_by_weight(
         
         # keep if NOT a leaf OR weight < threshold
         keep_mask = (~leaf_mask) | (ew < threshold)
+        
+        pruned = edges_b[keep_mask]
+        
+        # Safety: if all edges were pruned, keep the edge with minimum weight
+        # This prevents creating a completely disconnected graph
+        if pruned.shape[0] == 0:
+            min_idx = ew.argmin()
+            pruned = edges_b[min_idx:min_idx+1]
 
-        pruned_trees.append(edges_b[keep_mask])
+        pruned_trees.append(pruned)
 
     # Pad to same length across batch (stay on GPU)
     # Pad by duplicating the last valid edge instead of using [0,0]
     # This avoids creating self-loops that cause BFS to hang
-    max_edges = max((t.shape[0] for t in pruned_trees), default=0)
+    # Note: We guarantee at least 1 edge per tree above, so t[-1:] is always safe
+    max_edges = max((t.shape[0] for t in pruned_trees), default=1)
     padded = []
     for t in pruned_trees:
         if t.shape[0] < max_edges:
             # Duplicate the last valid edge for padding
-            last_edge = t[-1:] if t.shape[0] > 0 else torch.zeros((1, 2), dtype=t.dtype, device=t.device)
+            # Safe because we guarantee >= 1 edge per tree
+            last_edge = t[-1:]
             num_pads = max_edges - t.shape[0]
             pad = last_edge.repeat(num_pads, 1)
             t = torch.cat([t, pad], dim=0)

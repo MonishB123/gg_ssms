@@ -235,9 +235,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # Only enable debug/connectivity check on first iteration
             is_first_iter = (tree_scanning_algorithm.iteration_count == 1)
             
+            print(f"\n[Iter {tree_scanning_algorithm.iteration_count}] About to call MST...")
             torch.cuda.synchronize()
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             torch.cuda.synchronize()
+            print(f"[Iter {tree_scanning_algorithm.iteration_count}] MST completed, tree shape: {tree.shape}")
 
             if is_first_iter:
                 print("\nResulting MST edges:")
@@ -248,10 +250,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # Padding now uses duplicate edges instead of [0,0] to avoid self-loops
             pruning_threshold = 0.45
             
-            if is_first_iter:
-                print(f"\n[DEBUG] About to prune MST with threshold {pruning_threshold}")
-            
+            print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to prune (threshold={pruning_threshold})...")
             torch.cuda.synchronize()
+            
             try:
                 tree = prune_tree_by_weight(
                     tree, pairs, tree_weight, pruning_threshold,
@@ -259,10 +260,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
                     check_connectivity=is_first_iter
                 )
                 torch.cuda.synchronize()
-                if is_first_iter:
-                    print(f"[DEBUG] Pruning completed, tree shape: {tree.shape}")
+                print(f"[Iter {tree_scanning_algorithm.iteration_count}] Pruning completed, tree shape: {tree.shape}")
             except Exception as e:
-                print(f"Error during pruning: {str(e)}")
+                print(f"[Iter {tree_scanning_algorithm.iteration_count}] Error during pruning: {str(e)}")
                 raise
             
             if is_first_iter:
@@ -274,9 +274,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 print(f"Input tree shape to BFS: {tree.shape}")
                 print(f"context_len: {context_len}")
             
+            print(f"[Iter {tree_scanning_algorithm.iteration_count}] About to call BFS...")
             torch.cuda.synchronize()
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             torch.cuda.synchronize()
+            print(f"[Iter {tree_scanning_algorithm.iteration_count}] BFS completed")
             
             if is_first_iter:
                 print("BFS completed successfully")
