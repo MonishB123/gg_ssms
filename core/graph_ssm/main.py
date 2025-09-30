@@ -93,13 +93,33 @@ def batch_index_opr(data, index):
         print("\nDebug batch_index_opr:")
         print("- data shape:", data.shape)
         print("- index shape:", index.shape)
-        print("- index min/max:", index.min().item(), index.max().item())
-        print("- data stats - mean:", data.mean().item(), "std:", data.std().item())
+        
+        # Force CUDA synchronization before accessing values
+        try:
+            torch.cuda.synchronize()
+            idx_min = index.min().item()
+            idx_max = index.max().item()
+            print(f"- index min/max: {idx_min} {idx_max}")
+        except Exception as e:
+            print(f"- Error getting index min/max: {e}")
+            
+        try:
+            torch.cuda.synchronize()
+            data_mean = data.mean().item()
+            data_std = data.std().item()
+            print(f"- data stats - mean: {data_mean} std: {data_std}")
+        except Exception as e:
+            print(f"- Error getting data stats: {e}")
+            
         print("- data contains NaN:", torch.isnan(data).any().item())
         print("- data contains Inf:", torch.isinf(data).any().item())
         if torch.isnan(data).any() or torch.isinf(data).any():
             print("- First NaN/Inf positions:", torch.where(torch.isnan(data) | torch.isinf(data)))
+            
+    torch.cuda.synchronize()  # Ensure gather completes
     data = torch.gather(data, 2, index)
+    torch.cuda.synchronize()
+    
     print("- output stats - mean:", data.mean().item(), "std:", data.std().item())
     print("- output contains NaN:", torch.isnan(data).any().item())
     print("- output contains Inf:", torch.isinf(data).any().item())
@@ -236,11 +256,27 @@ def tree_scanning_algorithm(self, input_states, context_len):
             print("\nStarting BFS operation...")
             print(f"Input tree shape to BFS: {tree.shape}")
             print(f"context_len: {context_len}")
+            
+            # Force CUDA sync before BFS
+            torch.cuda.synchronize()
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
+            torch.cuda.synchronize()
+            
             print("BFS completed successfully")
             print(f"sorted_index2 shape: {sorted_index2.shape}")
             print(f"sorted_parent2 shape: {sorted_parent2.shape}")
             print(f"sorted_child2 shape: {sorted_child2.shape}")
+            
+            # Validate sorted_index2
+            try:
+                torch.cuda.synchronize()
+                idx2_min = sorted_index2.min().item()
+                idx2_max = sorted_index2.max().item()
+                print(f"sorted_index2 range: [{idx2_min}, {idx2_max}]")
+                if idx2_min < 0 or idx2_max >= context_len:
+                    print(f"WARNING: sorted_index2 has invalid indices! Expected [0, {context_len-1}], got [{idx2_min}, {idx2_max}]")
+            except Exception as e:
+                print(f"Error validating sorted_index2: {e}")
         else:
             print("\nSkipping BFS, using sorted indices from first tree...")
             sorted_index2, sorted_parent2, sorted_child2 = (
@@ -259,9 +295,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
     print(f"sorted_parent1 shape: {sorted_parent1.shape}")
     print(f"sorted_child1 shape: {sorted_child1.shape}")
     
+    torch.cuda.synchronize()
     feature_out1 = refine(
         feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
     )
+    torch.cuda.synchronize()
     print(f"feature_out1 shape after first refine: {feature_out1.shape}")
     
     print("\nStarting batch_index_opr...")
@@ -277,9 +315,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
     print(f"sorted_parent2 shape: {sorted_parent2.shape}")
     print(f"sorted_child2 shape: {sorted_child2.shape}")
     
+    torch.cuda.synchronize()
     feature_out2 = refine(
         feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
     )
+    torch.cuda.synchronize()
     print(f"feature_out2 shape after second refine: {feature_out2.shape}")
     
     print("\nCombining feature outputs...")
