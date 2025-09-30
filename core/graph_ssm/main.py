@@ -231,11 +231,22 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # edges is [batch_size, num_edges, 2]
             # weight is [batch_size, num_edges]
             # edges_out is [batch_size, num_vertices - 1, 2]
+            
+            # Only enable debug/connectivity check on first iteration
+            is_first_iter = (tree_scanning_algorithm.iteration_count == 1)
+            
+            if is_first_iter:
+                print("\nAbout to call MST...")
+                torch.cuda.synchronize()
+            
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
+            if is_first_iter:
+                torch.cuda.synchronize()
+                print("MST completed")
 
             # Print the resulting MST (only for first iteration)
-            if tree_scanning_algorithm.iteration_count == 1:
+            if is_first_iter:
                 print("\nResulting MST edges:")
                 print(tree.squeeze(0))  # Remove batch dimension for clearer printing
             
@@ -243,10 +254,10 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # high weight = high disimilarity
             pruning_threshold = 0.45
             
-            # Only enable debug/connectivity check on first iteration
-            is_first_iter = (tree_scanning_algorithm.iteration_count == 1)
             if is_first_iter:
-                print(f"Using pruning threshold: {pruning_threshold}")
+                print(f"\nUsing pruning threshold: {pruning_threshold}")
+                print("About to call prune_tree_by_weight...")
+                torch.cuda.synchronize()
             
             try:
                 tree = prune_tree_by_weight(
@@ -255,6 +266,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
                     check_connectivity=is_first_iter  # Only check connectivity on first iteration
                 )
                 if is_first_iter:
+                    torch.cuda.synchronize()
                     print("Pruning completed successfully")
                     print(f"Tree shape after pruning: {tree.shape}")
             except Exception as e:

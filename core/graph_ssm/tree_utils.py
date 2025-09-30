@@ -189,8 +189,17 @@ def prune_tree_by_weight(
     assert weights.dim() == 2
     device = tree.device
     
-    # Build lookup table once (GPU-based)
-    lookup_table = _build_pair_index_gpu(original_pairs)
+    # Cache lookup table - only build once per unique original_pairs tensor
+    if not hasattr(prune_tree_by_weight, '_lookup_cache'):
+        prune_tree_by_weight._lookup_cache = {}
+    
+    # Use id of original_pairs as cache key
+    cache_key = id(original_pairs)
+    if cache_key not in prune_tree_by_weight._lookup_cache:
+        lookup_table = _build_pair_index_gpu(original_pairs)
+        prune_tree_by_weight._lookup_cache[cache_key] = lookup_table
+    else:
+        lookup_table = prune_tree_by_weight._lookup_cache[cache_key]
 
     # Process all batches in parallel where possible
     pruned_trees = []
