@@ -1,15 +1,16 @@
 """
-GraphSSM Time Series Forecasting Evaluation Script
+GraphSSM Distance Metrics Performance Testing Script
 
-This script is designed to work with the following directory structure:
-- eval_forecasting.py: /data/
-- gg_ssms repository: /workspace/
-- ETDataset: /data/datasets/ETDataset/
-- Model checkpoints: /data/checkpoints/
-- Results: /data/results/
+This script tests the performance and speed of different distance formulas
+used in the GraphSSM model. It generates synthetic data to benchmark:
+- norm2_distance
+- cosine_distance  
+- gaussian_distance
+- euclidean_distance
+- manhattan_distance
 
-The script imports GraphSSM from the gg_ssms repository and uses MambaTS
-data providers for time series forecasting evaluation on the ETT dataset.
+Results are visualized in matplotlib charts showing computation time and
+accuracy metrics for each distance function.
 """
 
 import argparse
@@ -18,387 +19,484 @@ import os
 import random
 import sys
 import time
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, List
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.profiler import profile, record_function, ProfilerActivity
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
-# Add MambaTS to path to use their data providers
-# Since eval_forecasting.py is now in ~/data and gg_ssms repo is in ~/workspace
-gg_ssms_path = os.path.expanduser("/workspace")
-mamba_ts_path = os.path.join(gg_ssms_path, "MambaTS")
+"""
+GraphSSM Distance Metrics Performance Testing Script
 
-# Check if paths exist and provide helpful error messages
-if not os.path.exists(gg_ssms_path):
-    print(f"ERROR: GG_SSMS repository not found at {gg_ssms_path}")
-    print("Please ensure the gg_ssms repository is located at /workspace")
-    sys.exit(1)
+This script tests the performance and speed of different distance formulas
+used in the GraphSSM model. It generates synthetic data to benchmark:
+- norm2_distance
+- cosine_distance  
+- gaussian_distance
+- euclidean_distance
+- manhattan_distance
 
-if not os.path.exists(mamba_ts_path):
-    print(f"ERROR: MambaTS not found at {mamba_ts_path}")
-    print("Please ensure MambaTS is located in the gg_ssms repository")
-    sys.exit(1)
+Results are visualized in matplotlib charts showing computation time and
+accuracy metrics for each distance function.
+"""
 
-sys.path.append(mamba_ts_path)
+import argparse
+import math
+import os
+import random
+import sys
+import time
+from typing import Tuple, Dict, List
 
-from data_provider.data_factory import data_provider
-from utils.tools import set_seed
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
-# Import GraphSSM directly from main.py in the gg_ssms repo
-main_py_path = os.path.join(gg_ssms_path, "core", "graph_ssm", "main.py")
-if not os.path.exists(main_py_path):
-    print(f"ERROR: main.py not found at {main_py_path}")
-    print("Please ensure the core/graph_ssm/main.py file exists in the gg_ssms repository")
-    sys.exit(1)
+# Add the GraphSSM path
+gg_ssms_path = os.path.dirname(os.path.abspath(__file__))
+core_path = os.path.join(gg_ssms_path, "core", "graph_ssm")
+if os.path.exists(core_path):
+    sys.path.append(core_path)
+    from main import GraphSSM, norm2_distance, cosine_distance, gaussian_distance, euclidean_distance, manhattan_distance
+else:
+    print(f"Warning: Could not find core/graph_ssm at {core_path}")
+    print("Importing from current directory...")
+    # Try to import from current directory structure
+    try:
+        from core.graph_ssm.main import GraphSSM, norm2_distance, cosine_distance, gaussian_distance, euclidean_distance, manhattan_distance
+    except ImportError:
+        print("Could not import GraphSSM. Please ensure the core/graph_ssm/main.py file exists.")
+        sys.exit(1)
 
-sys.path.append(os.path.join(gg_ssms_path, "core", "graph_ssm"))
-from main import GraphSSM
+
+def set_seed(seed: int):
+    """Set random seed for reproducibility"""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
 
-class TFLOPSCalculator:
-    """Utility class for calculating TFLOPS during model inference"""
+def generate_synthetic_data(batch_size: int, seq_len: int, d_model: int, device: torch.device) -> torch.Tensor:
+    """Generate synthetic data for testing distance functions"""
+    # Create data with some structure to make distance calculations meaningful
+    data = torch.randn(batch_size, d_model, seq_len, device=device)
     
-    def __init__(self):
-        self.total_flops = 0
-        self.total_time = 0.0
-        self.batch_count = 0
-        self.start_time = None
-        
-    def start_timing(self):
-        """Start timing for a batch"""
-        self.start_time = time.time()
-        
-    def end_timing(self):
-        """End timing for a batch and accumulate time"""
-        if self.start_time is not None:
-            batch_time = time.time() - self.start_time
-            self.total_time += batch_time
-            self.batch_count += 1
-            self.start_time = None
-            return batch_time
-        return 0.0
+    # Add some temporal structure
+    for i in range(1, seq_len):
+        # Each timestep is somewhat similar to the previous one
+        data[:, :, i] = 0.7 * data[:, :, i-1] + 0.3 * data[:, :, i]
     
-    def add_flops(self, flops: int):
-        """Add FLOPs for a batch"""
-        self.total_flops += flops
-        
-    def calculate_tflops(self) -> float:
-        """Calculate TFLOPS from accumulated data"""
-        if self.total_time > 0:
-            return (self.total_flops / 1e12) / self.total_time
-        return 0.0
+    return data
+
+
+def time_distance_function(distance_fn, data1: torch.Tensor, data2: torch.Tensor, num_runs: int = 100) -> Tuple[float, torch.Tensor]:
+    """Time a distance function and return average execution time and result"""
+    # Warm up
+    for _ in range(10):
+        _ = distance_fn(data1, data2)
     
-    def reset(self):
-        """Reset counters"""
-        self.total_flops = 0
-        self.total_time = 0.0
-        self.batch_count = 0
-        self.start_time = None
-
-
-def count_linear_flops(input_shape: tuple, output_features: int, bias: bool = True) -> int:
-    """Count FLOPs for a linear layer"""
-    batch_size, seq_len, input_features = input_shape
-    flops_per_output = input_features * 2  # multiply + add
-    if bias:
-        flops_per_output += 1  # bias addition
-    total_outputs = batch_size * seq_len * output_features
-    return total_outputs * flops_per_output
-
-
-def count_normalization_flops(input_shape: tuple) -> int:
-    """Count FLOPs for normalization operations"""
-    batch_size, seq_len, features = input_shape
-    mean_flops = batch_size * features * seq_len
-    variance_flops = batch_size * seq_len * features * 3  # subtract, square, add
-    sqrt_flops = batch_size * features
-    div_flops = batch_size * seq_len * features
-    return mean_flops + variance_flops + sqrt_flops + div_flops
-
-
-def estimate_graphssm_flops(input_shape: tuple, d_model: int, d_state: int, d_conv: int, expand: int) -> int:
-    """Estimate FLOPs for GraphSSM operations"""
-    batch_size, seq_len, _ = input_shape
-    input_proj_flops = batch_size * seq_len * d_model * d_model * 2
-    state_flops = batch_size * seq_len * d_state * d_state * 2
-    conv_flops = batch_size * seq_len * d_model * d_conv * 2
-    output_proj_flops = batch_size * seq_len * d_model * d_model * 2
-    total_flops = (input_proj_flops + state_flops + conv_flops + output_proj_flops) * expand
-    return int(total_flops)
-
-
-def count_model_flops(model: nn.Module, input_shape: tuple, args: argparse.Namespace) -> int:
-    """Count total FLOPs for the TimeSeriesForecaster model"""
-    batch_size, seq_len, enc_in = input_shape
-    total_flops = 0
-    input_embedding_flops = count_linear_flops(input_shape, args.d_model, bias=False)
-    total_flops += input_embedding_flops
-    norm_flops = count_normalization_flops(input_shape) * 2
-    total_flops += norm_flops
-    graphssm_input_shape = (batch_size, seq_len, args.d_model)
-    graphssm_flops = estimate_graphssm_flops(
-        graphssm_input_shape, args.d_model, args.d_state, args.d_conv, args.expand
-    )
-    total_flops += graphssm_flops
-    output_shape = (batch_size, args.pred_len, args.d_model)
-    output_proj_flops = count_linear_flops(output_shape, args.c_out, bias=False)
-    total_flops += output_proj_flops
-    return total_flops
-
-
-class TimeSeriesForecaster(nn.Module):
-    def __init__(
-        self,
-        enc_in: int,
-        c_out: int,
-        seq_len: int,
-        pred_len: int,
-        d_model: int = 512,
-        d_state: int = 16,
-        d_conv: int = 4,
-        expand: int = 2,
-        distance_metric: str = "cosine",  # NEW: distance formula argument
-    ) -> None:
-        super().__init__()
-        self.seq_len = seq_len
-        self.pred_len = pred_len
-        self.enc_in = enc_in
-        self.c_out = c_out
-        self.d_model = d_model
-        self.distance_metric = distance_metric  # Store distance formula
-        
-        # Simple embedding layer
-        self.input_embedding = nn.Linear(enc_in, d_model)
-        
-        # Core GraphSSM with distance formula
-        self.graph_ssm = GraphSSM(
-            d_model=d_model, 
-            d_state=d_state, 
-            d_conv=d_conv, 
-            expand=expand,
-            dt_rank="auto",
-            dt_min=0.001,
-            dt_max=0.1,
-            dt_init="random",
-            dt_scale=1.0,
-            dt_init_floor=1e-4,
-            conv_bias=True,
-            bias=False,
-            use_fast_path=True,
-            distance_metric=self.distance_metric  # Pass to GraphSSM
-        )
-        
-        self.output_projection = nn.Linear(d_model, c_out)
-
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-        b, seq_len, enc_in = x_enc.shape
-        means = x_enc.mean(1, keepdim=True).detach()
-        x_enc = x_enc - means
-        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
-        x_enc /= stdev
-        embedded = self.input_embedding(x_enc)
-        context_len = min(seq_len, 4)
-        processed = self.graph_ssm(embedded, context_len)
-        if processed.shape[1] >= self.pred_len:
-            processed = processed[:, -self.pred_len:, :]
-        else:
-            last_timestep = processed[:, -1:, :].repeat(1, self.pred_len, 1)
-            processed = last_timestep
-        output = self.output_projection(processed)
-        output = output * (stdev[:, [0], :].repeat(1, self.pred_len, 1))
-        output = output + (means[:, [0], :].repeat(1, self.pred_len, 1))
-        return output
-
-
-def load_pretrained_model(model_path: str, args: argparse.Namespace, device: torch.device):
-    """Load a pre-trained model from checkpoint"""
-    model = TimeSeriesForecaster(
-        enc_in=args.enc_in,
-        c_out=args.c_out,
-        seq_len=args.seq_len,
-        pred_len=args.pred_len,
-        d_model=args.d_model,
-        d_state=args.d_state,
-        d_conv=args.d_conv,
-        expand=args.expand,
-        distance_metric=args.distance,  # Pass command-line distance
-    ).to(device)
+    # Synchronize GPU if available
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     
-    if os.path.exists(model_path):
-        checkpoint = torch.load(model_path, map_location=device)
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded pre-trained model from {model_path}")
-        else:
-            model.load_state_dict(checkpoint)
-            print(f"Loaded pre-trained model from {model_path}")
+    # Time the function
+    start_time = time.time()
+    
+    for _ in range(num_runs):
+        result = distance_fn(data1, data2)
+    
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+    
+    end_time = time.time()
+    avg_time = (end_time - start_time) / num_runs
+    
+    return avg_time, result
+
+
+def test_distance_accuracy(distance_functions: Dict, test_data: torch.Tensor) -> Dict:
+    """Test accuracy/behavior of distance functions on synthetic data"""
+    results = {}
+    
+    # Create test pairs with known relationships
+    seq_len = test_data.shape[-1]
+    
+    # Test 1: Identical vectors should have minimum distance (or maximum similarity)
+    identical_data = test_data[:, :, :2]  # Take first two timesteps
+    
+    # Test 2: Opposite vectors should have maximum distance
+    opposite_data = torch.stack([test_data[:, :, 0], -test_data[:, :, 0]], dim=-1)
+    
+    # Test 3: Gradually changing vectors
+    gradual_data = torch.stack([
+        test_data[:, :, 0], 
+        test_data[:, :, 0] * 0.9,
+        test_data[:, :, 0] * 0.5,
+        test_data[:, :, 0] * 0.1
+    ], dim=-1)
+    
+    for name, dist_fn in distance_functions.items():
+        results[name] = {}
+        
+        # Test identical vectors
+        identical_dist = dist_fn(identical_data[:, :, :1], identical_data[:, :, 1:2])
+        results[name]['identical'] = identical_dist.mean().item()
+        
+        # Test opposite vectors  
+        opposite_dist = dist_fn(opposite_data[:, :, :1], opposite_data[:, :, 1:2])
+        results[name]['opposite'] = opposite_dist.mean().item()
+        
+        # Test gradual change
+        gradual_dists = []
+        for i in range(3):
+            dist = dist_fn(gradual_data[:, :, :1], gradual_data[:, :, i+1:i+2])
+            gradual_dists.append(dist.mean().item())
+        results[name]['gradual'] = gradual_dists
+        
+        # Compute variance (measure of discrimination ability)
+        all_dists = [identical_dist.mean().item(), opposite_dist.mean().item()] + gradual_dists
+        results[name]['variance'] = np.var(all_dists)
+    
+    return results
+
+
+def benchmark_distance_functions(batch_sizes: List[int], seq_lens: List[int], d_model: int = 64, device: torch.device = torch.device('cpu')) -> Dict:
+    """Benchmark all distance functions across different input sizes"""
+    
+    distance_functions = {
+        'norm2': norm2_distance,
+        'cosine': cosine_distance,
+        'gaussian': gaussian_distance,
+        'euclidean': euclidean_distance,
+        'manhattan': manhattan_distance
+    }
+    
+    results = {
+        'batch_sizes': batch_sizes,
+        'seq_lens': seq_lens,
+        'times': {name: [] for name in distance_functions.keys()},
+        'accuracy': {},
+        'memory_usage': {name: [] for name in distance_functions.keys()}
+    }
+    
+    print(f"Benchmarking distance functions on {device}")
+    print(f"Testing batch sizes: {batch_sizes}")
+    print(f"Testing sequence lengths: {seq_lens}")
+    print("-" * 50)
+    
+    # Test different configurations
+    for batch_size in batch_sizes:
+        for seq_len in seq_lens:
+            print(f"Testing batch_size={batch_size}, seq_len={seq_len}")
+            
+            # Generate test data
+            test_data = generate_synthetic_data(batch_size, seq_len, d_model, device)
+            
+            # Create pairs for distance computation
+            data1 = test_data[:, :, :-1]  # All but last timestep
+            data2 = test_data[:, :, 1:]   # All but first timestep
+            
+            batch_times = {name: [] for name in distance_functions.keys()}
+            
+            for name, dist_fn in distance_functions.items():
+                try:
+                    # Measure memory before
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        mem_before = torch.cuda.memory_allocated()
+                    
+                    # Time the function
+                    avg_time, _ = time_distance_function(dist_fn, data1, data2, num_runs=50)
+                    batch_times[name].append(avg_time)
+                    
+                    # Measure memory after
+                    if torch.cuda.is_available():
+                        mem_after = torch.cuda.memory_allocated()
+                        mem_used = (mem_after - mem_before) / 1024 / 1024  # MB
+                        results['memory_usage'][name].append(mem_used)
+                    else:
+                        results['memory_usage'][name].append(0)
+                    
+                    print(f"  {name}: {avg_time*1000:.3f}ms")
+                    
+                except Exception as e:
+                    print(f"  {name}: ERROR - {e}")
+                    batch_times[name].append(float('inf'))
+                    results['memory_usage'][name].append(0)
+            
+            # Store results
+            for name in distance_functions.keys():
+                results['times'][name].extend(batch_times[name])
+            
+            print()
+    
+    # Test accuracy on a standard configuration
+    print("Testing accuracy/behavior...")
+    test_data = generate_synthetic_data(2, 10, d_model, device)
+    accuracy_results = test_distance_accuracy(distance_functions, test_data)
+    results['accuracy'] = accuracy_results
+    
+    return results
+
+
+def plot_performance_results(results: Dict, save_path: str = None):
+    """Create comprehensive plots of the performance results"""
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig.suptitle('GraphSSM Distance Functions Performance Analysis', fontsize=16, fontweight='bold')
+    
+    # Colors for each distance function
+    colors = {
+        'norm2': '#1f77b4',
+        'cosine': '#ff7f0e', 
+        'gaussian': '#2ca02c',
+        'euclidean': '#d62728',
+        'manhattan': '#9467bd'
+    }
+    
+    # 1. Execution Time Comparison (Bar Chart)
+    ax1 = axes[0, 0]
+    dist_names = list(results['times'].keys())
+    avg_times = [np.mean(results['times'][name]) * 1000 for name in dist_names]  # Convert to ms
+    bars = ax1.bar(dist_names, avg_times, color=[colors[name] for name in dist_names])
+    ax1.set_title('Average Execution Time', fontweight='bold')
+    ax1.set_ylabel('Time (ms)')
+    ax1.set_xlabel('Distance Function')
+    ax1.tick_params(axis='x', rotation=45)
+    
+    # Add value labels on bars
+    for bar, time_val in zip(bars, avg_times):
+        height = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'{time_val:.2f}ms', ha='center', va='bottom', fontsize=9)
+    
+    # 2. Execution Time Distribution (Box Plot)
+    ax2 = axes[0, 1]
+    time_data = [np.array(results['times'][name]) * 1000 for name in dist_names]
+    bp = ax2.boxplot(time_data, labels=dist_names, patch_artist=True)
+    for patch, name in zip(bp['boxes'], dist_names):
+        patch.set_facecolor(colors[name])
+        patch.set_alpha(0.7)
+    ax2.set_title('Execution Time Distribution', fontweight='bold')
+    ax2.set_ylabel('Time (ms)')
+    ax2.set_xlabel('Distance Function')
+    ax2.tick_params(axis='x', rotation=45)
+    
+    # 3. Memory Usage Comparison
+    ax3 = axes[0, 2]
+    if any(sum(results['memory_usage'][name]) > 0 for name in dist_names):
+        avg_memory = [np.mean(results['memory_usage'][name]) for name in dist_names]
+        bars = ax3.bar(dist_names, avg_memory, color=[colors[name] for name in dist_names])
+        ax3.set_title('Average Memory Usage', fontweight='bold')
+        ax3.set_ylabel('Memory (MB)')
+        ax3.set_xlabel('Distance Function')
+        ax3.tick_params(axis='x', rotation=45)
+        
+        # Add value labels
+        for bar, mem_val in zip(bars, avg_memory):
+            height = bar.get_height()
+            if height > 0:
+                ax3.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                        f'{mem_val:.1f}MB', ha='center', va='bottom', fontsize=9)
     else:
-        print(f"No pre-trained model found at {model_path}")
-        print("Using randomly initialized model for demonstration...")
+        ax3.text(0.5, 0.5, 'Memory usage data\nnot available\n(CPU mode)', 
+                ha='center', va='center', transform=ax3.transAxes, fontsize=12)
+        ax3.set_title('Memory Usage (N/A)', fontweight='bold')
     
-    model.eval()
-    return model
+    # 4. Accuracy Test: Distance for Identical vs Opposite Vectors
+    ax4 = axes[1, 0]
+    identical_scores = [results['accuracy'][name]['identical'] for name in dist_names]
+    opposite_scores = [results['accuracy'][name]['opposite'] for name in dist_names]
+    
+    x = np.arange(len(dist_names))
+    width = 0.35
+    bars1 = ax4.bar(x - width/2, identical_scores, width, label='Identical Vectors', alpha=0.8)
+    bars2 = ax4.bar(x + width/2, opposite_scores, width, label='Opposite Vectors', alpha=0.8)
+    
+    ax4.set_title('Distance Values: Identical vs Opposite Vectors', fontweight='bold')
+    ax4.set_ylabel('Distance Value')
+    ax4.set_xlabel('Distance Function')
+    ax4.set_xticks(x)
+    ax4.set_xticklabels(dist_names, rotation=45)
+    ax4.legend()
+    
+    # 5. Discrimination Ability (Variance)
+    ax5 = axes[1, 1]
+    variances = [results['accuracy'][name]['variance'] for name in dist_names]
+    bars = ax5.bar(dist_names, variances, color=[colors[name] for name in dist_names])
+    ax5.set_title('Discrimination Ability (Variance)', fontweight='bold')
+    ax5.set_ylabel('Variance in Distance Values')
+    ax5.set_xlabel('Distance Function')
+    ax5.tick_params(axis='x', rotation=45)
+    
+    # Add value labels
+    for bar, var_val in zip(bars, variances):
+        height = bar.get_height()
+        ax5.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'{var_val:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # 6. Gradual Change Response
+    ax6 = axes[1, 2]
+    for name in dist_names:
+        gradual_values = results['accuracy'][name]['gradual']
+        similarity_levels = ['90%', '50%', '10%']
+        ax6.plot(similarity_levels, gradual_values, marker='o', linewidth=2, 
+                label=name, color=colors[name])
+    
+    ax6.set_title('Response to Gradual Changes', fontweight='bold')
+    ax6.set_ylabel('Distance Value')
+    ax6.set_xlabel('Vector Similarity Level')
+    ax6.legend()
+    ax6.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Performance plot saved to: {save_path}")
+    
+    plt.show()
 
 
-def build_argparser() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate core/graph_ssm on MambaTS time series forecasting")
+def print_summary_report(results: Dict):
+    """Print a detailed summary report of the benchmark results"""
+    print("\n" + "="*70)
+    print("GRAPHSSM DISTANCE FUNCTIONS PERFORMANCE REPORT")
+    print("="*70)
     
-    # -- snip: all existing arguments here --
+    dist_names = list(results['times'].keys())
     
-    # GraphSSM specific
-    parser.add_argument("--d_state", type=int, default=16, help="GraphSSM state size")
-    parser.add_argument("--d_conv", type=int, default=4, help="GraphSSM conv kernel size")
-    parser.add_argument("--expand", type=int, default=2, help="Expansion ratio in GraphSSM")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU even if CUDA is available")
+    # Performance Summary
+    print("\n📊 PERFORMANCE SUMMARY")
+    print("-" * 30)
     
-    # NEW: distance metric CLI argument
-    parser.add_argument("--distance", type=str, default="cosine",
-                        choices=["cosine", "euclidean", "manhattan", "gaussian", "norm2"],
-                        help="Distance formula to use in GraphSSM")
+    # Find fastest and slowest
+    avg_times = {name: np.mean(results['times'][name]) * 1000 for name in dist_names}
+    fastest = min(avg_times.items(), key=lambda x: x[1])
+    slowest = max(avg_times.items(), key=lambda x: x[1])
     
-    # Inference specific
-    parser.add_argument("--model_path", type=str, default=os.path.expanduser("~/data/checkpoints/best_model.pth"), help="Path to pre-trained model")
-    parser.add_argument("--save_predictions", action="store_true", help="Save predictions to file")
-    parser.add_argument("--mode", type=str, default="inference", choices=["inference", "train", "example"], help="Mode: inference, train, or example")
-    parser.add_argument("--example", action="store_true", help="Run simple example like main.py")
+    print(f"🏆 Fastest: {fastest[0]} ({fastest[1]:.3f}ms)")
+    print(f"🐌 Slowest: {slowest[0]} ({slowest[1]:.3f}ms)")
+    print(f"📈 Speed Ratio: {slowest[1]/fastest[1]:.1f}x")
     
-    # TFLOPS profiling specific
-    parser.add_argument("--warmup_batches", type=int, default=5, help="Number of warmup batches for accurate timing")
-    parser.add_argument("--save_metrics", action="store_true", help="Save performance metrics to file")
-    parser.add_argument("--profile_detailed", action="store_true", help="Enable detailed profiling with PyTorch profiler")
-    parser.add_argument("--profile_steps", type=int, default=10, help="Number of steps to profile in detailed mode")
+    print(f"\n⏱️  Detailed Execution Times:")
+    for name in dist_names:
+        avg_time = avg_times[name]
+        std_time = np.std(results['times'][name]) * 1000
+        print(f"   {name:12}: {avg_time:7.3f}ms ± {std_time:5.3f}ms")
     
-    return parser.parse_args()
+    # Accuracy Analysis
+    print(f"\n🎯 ACCURACY & BEHAVIOR ANALYSIS")
+    print("-" * 35)
+    
+    print("Distance Values for Test Cases:")
+    print(f"{'Function':<12} {'Identical':<10} {'Opposite':<10} {'Variance':<10}")
+    print("-" * 45)
+    
+    for name in dist_names:
+        identical = results['accuracy'][name]['identical']
+        opposite = results['accuracy'][name]['opposite']
+        variance = results['accuracy'][name]['variance']
+        print(f"{name:<12} {identical:8.4f}   {opposite:8.4f}   {variance:8.4f}")
+    
+    # Best discrimination
+    variances = {name: results['accuracy'][name]['variance'] for name in dist_names}
+    best_discrimination = max(variances.items(), key=lambda x: x[1])
+    
+    print(f"\n🎯 Best Discrimination: {best_discrimination[0]} (variance: {best_discrimination[1]:.4f})")
+    
+    # Memory Usage
+    if any(sum(results['memory_usage'][name]) > 0 for name in dist_names):
+        print(f"\n💾 MEMORY USAGE")
+        print("-" * 15)
+        for name in dist_names:
+            avg_mem = np.mean(results['memory_usage'][name])
+            if avg_mem > 0:
+                print(f"   {name:12}: {avg_mem:6.2f}MB")
+            else:
+                print(f"   {name:12}: N/A")
+    
+    # Recommendations
+    print(f"\n💡 RECOMMENDATIONS")
+    print("-" * 18)
+    print(f"• For speed: Use '{fastest[0]}' (fastest execution)")
+    print(f"• For discrimination: Use '{best_discrimination[0]}' (highest variance)")
+    
+    # Determine best overall
+    # Score based on speed (inverse) and discrimination ability
+    scores = {}
+    for name in dist_names:
+        speed_score = fastest[1] / avg_times[name]  # Higher is better
+        discrimination_score = variances[name] / best_discrimination[1]  # Higher is better
+        overall_score = (speed_score + discrimination_score) / 2
+        scores[name] = overall_score
+    
+    best_overall = max(scores.items(), key=lambda x: x[1])
+    print(f"• Overall best: '{best_overall[0]}' (balanced speed & accuracy)")
+    
+    print("\n" + "="*70)
+
+
+def main():
+    """Main function to run the distance function performance tests"""
+    parser = argparse.ArgumentParser(description="Benchmark GraphSSM distance functions")
+    parser.add_argument("--batch_sizes", nargs="+", type=int, default=[1, 4, 8, 16], 
+                       help="Batch sizes to test")
+    parser.add_argument("--seq_lens", nargs="+", type=int, default=[8, 16, 32, 64], 
+                       help="Sequence lengths to test")
+    parser.add_argument("--d_model", type=int, default=64, 
+                       help="Model dimension")
+    parser.add_argument("--device", type=str, default="auto", 
+                       help="Device to use (auto, cpu, cuda)")
+    parser.add_argument("--seed", type=int, default=42, 
+                       help="Random seed")
+    parser.add_argument("--save_plot", type=str, default="distance_performance.png", 
+                       help="Path to save the performance plot")
+    parser.add_argument("--no_plot", action="store_true", 
+                       help="Skip plotting")
+    
+    args = parser.parse_args()
+    
+    # Set device
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+    
+    print(f"Using device: {device}")
+    
+    # Set random seed
+    set_seed(args.seed)
+    
+    # Run benchmarks
+    print("Starting distance function benchmarks...")
+    results = benchmark_distance_functions(
+        batch_sizes=args.batch_sizes,
+        seq_lens=args.seq_lens, 
+        d_model=args.d_model,
+        device=device
+    )
+    
+    # Print summary report
+    print_summary_report(results)
+    
+    # Create plots
+    if not args.no_plot:
+        plot_performance_results(results, args.save_plot)
+    
+    print("\nBenchmarking completed!")
 
 
 if __name__ == "__main__":
-    # Parse arguments
-    args = build_argparser()
-    
-    # Set random seed for reproducibility
-    set_seed(args.seed)
-    
-    print("=" * 60)
-    print("GraphSSM Time Series Forecasting")
-    print("=" * 60)
-    print(f"Mode: {args.mode.upper()}")
-    print(f"Dataset: {args.data}")
-    print(f"Data path: {os.path.join(args.root_path, args.data_path)}")
-    print(f"Sequence length: {args.seq_len}, Prediction length: {args.pred_len}")
-    print(f"Model: {args.model}")
-    print(f"Distance formula: {args.distance}")  # NEW
-    print("=" * 60)
-    
-    # Check if data file exists
-    data_file_path = os.path.join(args.root_path, args.data_path)
-    if not os.path.exists(data_file_path):
-        print(f"ERROR: Data file not found at {data_file_path}")
-        print("Please download the ETT dataset and place it in the correct location.")
-        exit(1)
-    
-    # Device selection
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    
-    # Prepare dataset using MambaTS
-    dataset, data_loader = data_provider(
-        dataset_name=args.data,
-        root_path=args.root_path,
-        data_path=args.data_path,
-        flag="test",
-        size=[args.seq_len, args.pred_len],
-        features=args.features,
-        target=args.target,
-        inverse=args.inverse,
-        timeenc=args.timeenc,
-        freq=args.freq,
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-    )
-    
-    # Hard-coded list of distance formulas to test
-    distance_metrics_to_test = ["cosine", "euclidean", "manhattan", "gaussian", "norm2"]
-    
-    # Store results for plotting
-    results = []
-
-    for distance in distance_metrics_to_test:
-        print(f"\nEvaluating distance metric: {distance.upper()}")
-        
-        # Load model with the current distance metric
-        args.distance = distance
-        model = load_pretrained_model(args.model_path, args, device)
-        
-        tflops_calculator = TFLOPSCalculator()
-        
-        # Warmup
-        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(data_loader):
-            if i >= args.warmup_batches:
-                break
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            batch_x_mark, batch_y_mark = batch_x_mark.to(device), batch_y_mark.to(device)
-            with torch.no_grad():
-                _ = model(batch_x, batch_x_mark, batch_y, batch_y_mark)
-        
-        # Timed inference
-        total_flops = 0
-        total_time = 0
-        batch_count = 0
-        for batch_x, batch_y, batch_x_mark, batch_y_mark in data_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            batch_x_mark, batch_y_mark = batch_x_mark.to(device), batch_y_mark.to(device)
-            b, seq_len, enc_in = batch_x.shape
-            
-            # Count FLOPs for this batch
-            flops = count_model_flops(model, batch_x.shape, args)
-            tflops_calculator.add_flops(flops)
-            
-            tflops_calculator.start_timing()
-            with torch.no_grad():
-                _ = model(batch_x, batch_x_mark, batch_y, batch_y_mark)
-            batch_time = tflops_calculator.end_timing()
-            
-            total_flops += flops
-            total_time += batch_time
-            batch_count += 1
-        
-        avg_batch_time = total_time / batch_count if batch_count > 0 else 0
-        tflops = tflops_calculator.calculate_tflops()
-        
-        results.append({
-            "distance": distance,
-            "avg_batch_time": avg_batch_time,
-            "tflops": tflops
-        })
-        
-        print(f"Average batch time: {avg_batch_time:.4f} s, TFLOPS: {tflops:.4f}")
-    
-    # Generate bar chart
-    distance_labels = [r["distance"] for r in results]
-    avg_times = [r["avg_batch_time"] for r in results]
-    tflops_vals = [r["tflops"] for r in results]
-
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-
-    color = 'tab:blue'
-    ax1.set_xlabel('Distance Metric')
-    ax1.set_ylabel('Avg Batch Time (s)', color=color)
-    ax1.bar(distance_labels, avg_times, color=color, alpha=0.6, label='Avg Batch Time')
-    ax1.tick_params(axis='y', labelcolor=color)
-
-    ax2 = ax1.twinx()
-    color = 'tab:red'
-    ax2.set_ylabel('TFLOPS', color=color)
-    ax2.plot(distance_labels, tflops_vals, color=color, marker='o', linewidth=2, label='TFLOPS')
-    ax2.tick_params(axis='y', labelcolor=color)
-
-    fig.tight_layout()
-    plt.title('GraphSSM Inference Performance Across Distance Metrics')
-    ax1.legend(loc='upper left')
-    ax2.legend(loc='upper right')
-    plt.show()
+    main()
