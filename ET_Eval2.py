@@ -248,8 +248,29 @@ def load_pretrained_model(model_path: str, args: argparse.Namespace, device: tor
 def build_argparser() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Evaluate core/graph_ssm on MambaTS time series forecasting")
     
-    # -- snip: all existing arguments here --
+    # Basic config
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--model", type=str, default="GraphSSM", help="Model name")
+    
+    # Data loader
+    parser.add_argument("--data", type=str, default="ETTh2", help="Dataset type")
+    parser.add_argument("--root_path", type=str, default=os.path.expanduser("~/data/datasets/ETDataset"), help="Root path of the data file")
+    parser.add_argument("--data_path", type=str, default="ETTh2.csv", help="Data file")
+    parser.add_argument("--features", type=str, default="M", help="Forecasting task, options:[M, S, MS]")
+    parser.add_argument("--target", type=str, default="OT", help="Target feature in S or MS task")
+    parser.add_argument("--freq", type=str, default="h", help="Freq for time features encoding")
+    parser.add_argument("--timeenc", type=int, default=0, help="Time features encoding")
+    parser.add_argument("--inverse", action="store_true", help="Inverse output data", default=False)
+    
+    # Forecasting task
+    parser.add_argument("--seq_len", type=int, default=720, help="Input sequence length")
+    parser.add_argument("--pred_len", type=int, default=96, help="Prediction sequence length")
+    
+    # Model define
+    parser.add_argument("--enc_in", type=int, default=7, help="Encoder input size")
+    parser.add_argument("--c_out", type=int, default=7, help="Output size")
+    parser.add_argument("--d_model", type=int, default=16, help="Dimension of model")
+    
     # GraphSSM specific
     parser.add_argument("--d_state", type=int, default=16, help="GraphSSM state size")
     parser.add_argument("--d_conv", type=int, default=4, help="GraphSSM conv kernel size")
@@ -260,6 +281,9 @@ def build_argparser() -> argparse.Namespace:
     parser.add_argument("--distance", type=str, default="cosine",
                         choices=["cosine", "euclidean", "manhattan", "gaussian", "norm2"],
                         help="Distance formula to use in GraphSSM")
+    
+    # Optimization
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size of train input data")
     
     # Inference specific
     parser.add_argument("--model_path", type=str, default=os.path.expanduser("~/data/checkpoints/best_model.pth"), help="Path to pre-trained model")
