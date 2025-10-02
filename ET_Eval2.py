@@ -17,9 +17,27 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from typing import Dict, List, Tuple
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend for terminal
 import matplotlib.pyplot as plt
 import pandas as pd
 from collections import defaultdict
+
+# Try to import terminal display libraries
+try:
+    from PIL import Image
+    import io
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+    print("Warning: PIL not available. Install with: pip install Pillow")
+
+try:
+    # For displaying images in Jupyter/IPython terminals
+    from IPython.display import Image as IPImage, display
+    HAS_IPYTHON = True
+except ImportError:
+    HAS_IPYTHON = False
 
 # Add paths
 gg_ssms_path = os.path.expanduser("/workspace")
@@ -432,10 +450,127 @@ def create_comprehensive_visualization(all_results: List[Dict], args: argparse.N
     plt.savefig(pdf_path, bbox_inches='tight')
     print(f"PDF saved to: {pdf_path}")
     
-    if not args.no_display:
-        plt.show()
+    # Display in terminal if possible
+    display_plot_in_terminal(output_path, args)
     
     plt.close()
+
+
+def display_plot_in_terminal(image_path: str, args: argparse.Namespace):
+    """Display plot in terminal using various methods"""
+    
+    print("\n" + "="*70)
+    print("DISPLAYING PLOT IN TERMINAL")
+    print("="*70)
+    
+    # Method 1: Try IPython display (works in Jupyter terminals)
+    if HAS_IPYTHON:
+        try:
+            print("Attempting to display via IPython...")
+            display(IPImage(filename=image_path))
+            print("✓ Plot displayed via IPython")
+            return
+        except Exception as e:
+            print(f"IPython display failed: {e}")
+    
+    # Method 2: Try ASCII art conversion using plotext
+    try:
+        import plotext as plt_term
+        print("\nGenerating terminal-friendly plot with plotext...")
+        create_terminal_plot(all_results, plt_term)
+        return
+    except ImportError:
+        print("plotext not available. Install with: pip install plotext")
+    
+    # Method 3: Display file path and instructions
+    print("\n📊 Plot generated but cannot display inline in this terminal.")
+    print(f"\nPlot saved to: {image_path}")
+    print("\nTo view the plot, use one of these methods:")
+    print("1. Download the file via RunPod's file browser")
+    print("2. Use RunPod's web-based file viewer")
+    print("3. Install plotext for terminal plots: pip install plotext")
+    print("4. Use: python -c \"from PIL import Image; Image.open('{}').show()\"".format(image_path))
+    print("="*70)
+
+
+def create_terminal_plot(all_results: List[Dict], plt_term):
+    """Create ASCII plots for terminal display"""
+    
+    metrics = [r['distance_metric'] for r in all_results]
+    
+    # Plot 1: Inference Time Comparison
+    print("\n" + "="*70)
+    print("INFERENCE TIME COMPARISON (Terminal View)")
+    print("="*70)
+    times = [r['total_time'] for r in all_results]
+    plt_term.clear_figure()
+    plt_term.bar(metrics, times)
+    plt_term.title("Total Inference Time by Distance Metric")
+    plt_term.xlabel("Distance Metric")
+    plt_term.ylabel("Time (seconds)")
+    plt_term.show()
+    
+    # Plot 2: MAE Comparison
+    print("\n" + "="*70)
+    print("FORECASTING ACCURACY (MAE) - Terminal View")
+    print("="*70)
+    mae_vals = [r['mae'] for r in all_results]
+    plt_term.clear_figure()
+    plt_term.bar(metrics, mae_vals)
+    plt_term.title("Mean Absolute Error by Distance Metric")
+    plt_term.xlabel("Distance Metric")
+    plt_term.ylabel("MAE")
+    plt_term.show()
+    
+    # Plot 3: TFLOPS Comparison
+    print("\n" + "="*70)
+    print("COMPUTATIONAL THROUGHPUT - Terminal View")
+    print("="*70)
+    tflops = [r['tflops'] for r in all_results]
+    plt_term.clear_figure()
+    plt_term.bar(metrics, tflops)
+    plt_term.title("TFLOPS by Distance Metric")
+    plt_term.xlabel("Distance Metric")
+    plt_term.ylabel("TFLOPS")
+    plt_term.show()
+    
+    print("\n✓ Terminal plots displayed successfully!")
+
+
+def print_ascii_comparison_table(all_results: List[Dict]):
+    """Print a detailed ASCII table comparison"""
+    
+    print("\n" + "="*100)
+    print("DETAILED COMPARISON TABLE")
+    print("="*100)
+    
+    # Header
+    print(f"{'Metric':<12} | {'MAE':<10} | {'RMSE':<10} | {'MAPE(%)':<10} | {'Time(s)':<10} | {'TFLOPS':<10} | {'Rank':<6}")
+    print("-"*100)
+    
+    # Sort by speed
+    sorted_results = sorted(all_results, key=lambda x: x['total_time'])
+    
+    for i, r in enumerate(sorted_results, 1):
+        print(f"{r['distance_metric']:<12} | "
+              f"{r['mae']:<10.6f} | "
+              f"{r['rmse']:<10.6f} | "
+              f"{r['mape']:<10.2f} | "
+              f"{r['total_time']:<10.2f} | "
+              f"{r['tflops']:<10.2f} | "
+              f"#{i:<5}")
+    
+    print("="*100)
+    
+    # Highlight winners
+    best_speed = min(all_results, key=lambda x: x['total_time'])
+    best_acc = min(all_results, key=lambda x: x['mae'])
+    best_tflops = max(all_results, key=lambda x: x['tflops'])
+    
+    print(f"\n🏆 FASTEST:         {best_speed['distance_metric']:<12} ({best_speed['total_time']:.2f}s)")
+    print(f"🎯 MOST ACCURATE:  {best_acc['distance_metric']:<12} (MAE: {best_acc['mae']:.6f})")
+    print(f"⚡ HIGHEST TFLOPS: {best_tflops['distance_metric']:<12} ({best_tflops['tflops']:.2f} TFLOPS)")
+    print("="*100)
 
 
 def main():
