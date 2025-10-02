@@ -451,12 +451,12 @@ def create_comprehensive_visualization(all_results: List[Dict], args: argparse.N
     print(f"PDF saved to: {pdf_path}")
     
     # Display in terminal if possible
-    display_plot_in_terminal(output_path, args)
+    display_plot_in_terminal(output_path, results, args)
     
     plt.close()
 
 
-def display_plot_in_terminal(image_path: str, args: argparse.Namespace):
+def display_plot_in_terminal(image_path: str, all_results: List[Dict], args: argparse.Namespace):
     """Display plot in terminal using various methods"""
     
     print("\n" + "="*70)
@@ -481,15 +481,17 @@ def display_plot_in_terminal(image_path: str, args: argparse.Namespace):
         return
     except ImportError:
         print("plotext not available. Install with: pip install plotext")
+    except Exception as e:
+        print(f"plotext display failed: {e}")
     
     # Method 3: Display file path and instructions
-    print("\n📊 Plot generated but cannot display inline in this terminal.")
+    print("\nPlot generated but cannot display inline in this terminal.")
     print(f"\nPlot saved to: {image_path}")
     print("\nTo view the plot, use one of these methods:")
     print("1. Download the file via RunPod's file browser")
     print("2. Use RunPod's web-based file viewer")
     print("3. Install plotext for terminal plots: pip install plotext")
-    print("4. Use: python -c \"from PIL import Image; Image.open('{}').show()\"".format(image_path))
+    print(f"4. Use: python -c \"from PIL import Image; Image.open('{image_path}').show()\"")
     print("="*70)
 
 
@@ -665,6 +667,9 @@ def main():
     df.to_csv(csv_path, index=False)
     print(f"\nResults saved to: {csv_path}")
     
+    # Print ASCII comparison table
+    print_ascii_comparison_table(all_results)
+    
     # Print final summary
     print("\n" + "=" * 70)
     print("FINAL SUMMARY")
@@ -680,7 +685,11 @@ def main():
     print("\nGenerating comprehensive visualization...")
     create_comprehensive_visualization(all_results, args)
     
-    print("\nBenchmark complete!")
+    print("\n✅ Benchmark complete!")
+    print(f"\nAll files saved to: {args.output_dir}/")
+    print(f"- PNG visualization: comprehensive_benchmark_{args.data}.png")
+    print(f"- PDF visualization: comprehensive_benchmark_{args.data}.pdf")
+    print(f"- CSV data: benchmark_results_{args.data}.csv")
 
 
 if __name__ == "__main__":
