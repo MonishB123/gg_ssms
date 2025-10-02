@@ -1,13 +1,11 @@
 """
-Distance Metric Benchmarking for GraphSSM
+Comprehensive Distance Metric Benchmarking for GraphSSM on ETT Dataset
 
-This script tests different distance metrics (cosine, euclidean, gaussian, manhattan, norm2)
-to measure their impact on GraphSSM inference speed and creates visualization plots.
-
-REQUIRES: Modified main.py with distance_metric parameter support
+This script integrates with eval_forecasting.py to benchmark different distance metrics
+on actual time series forecasting tasks with full metrics, performance profiling, and visualization.
 
 Usage:
-    python benchmark_distances.py --seq_len 96 --pred_len 24 --batch_size 32
+    python benchmark_et_distances.py --data ETTm1 --seq_len 96 --pred_len 24
 """
 
 import argparse
@@ -17,345 +15,535 @@ import time
 import numpy as np
 import torch
 import torch.nn as nn
-from matplotlib import pyplot as plt
+from torch.utils.data import DataLoader
+from typing import Dict, List, Tuple
+import matplotlib.pyplot as plt
 import pandas as pd
+from collections import defaultdict
 
-# Add paths (same as eval_forecasting.py)
+# Add paths
 gg_ssms_path = os.path.expanduser("/workspace")
 mamba_ts_path = os.path.join(gg_ssms_path, "MambaTS")
 sys.path.append(mamba_ts_path)
 sys.path.append(os.path.join(gg_ssms_path, "core", "graph_ssm"))
 
+from data_provider.data_factory import data_provider
+from utils.tools import set_seed
 from main import GraphSSM
 
 
-def benchmark_distance_metric(distance_metric, args, num_iterations=50, warmup=5):
-    """
-    Benchmark a specific distance metric
+class TimeSeriesForecaster(nn.Module):
+    """Time series forecaster with configurable distance metric"""
+    def __init__(
+        self,
+        enc_in: int,
+        c_out: int,
+        seq_len: int,
+        pred_len: int,
+        d_model: int = 512,
+        d_state: int = 16,
+        d_conv: int = 4,
+        expand: int = 2,
+        distance_metric: str = 'cosine',
+    ) -> None:
+        super().__init__()
+        self.seq_len = seq_len
+        self.pred_len = pred_len
+        self.enc_in = enc_in
+        self.c_out = c_out
+        self.d_model = d_model
+        
+        self.input_embedding = nn.Linear(enc_in, d_model)
+        
+        # Core GraphSSM with specified distance metric
+        self.graph_ssm = GraphSSM(
+            d_model=d_model, 
+            d_state=d_state, 
+            d_conv=d_conv, 
+            expand=expand,
+            dt_rank="auto",
+            dt_min=0.001,
+            dt_max=0.1,
+            dt_init="random",
+            dt_scale=1.0,
+            dt_init_floor=1e-4,
+            conv_bias=True,
+            bias=False,
+            use_fast_path=True,
+            distance_metric=distance_metric  # KEY ADDITION
+        )
+        
+        self.output_projection = nn.Linear(d_model, c_out)
+
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+        b, seq_len, enc_in = x_enc.shape
+        
+        # Normalize
+        means = x_enc.mean(1, keepdim=True).detach()
+        x_enc = x_enc - means
+        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
+        x_enc /= stdev
+        
+        # Embed and process
+        embedded = self.input_embedding(x_enc)
+        context_len = min(seq_len, 4)
+        processed = self.graph_ssm(embedded, context_len)
+        
+        # Extract predictions
+        if processed.shape[1] >= self.pred_len:
+            processed = processed[:, -self.pred_len:, :]
+        else:
+            last_timestep = processed[:, -1:, :].repeat(1, self.pred_len, 1)
+            processed = last_timestep
+        
+        # Project and denormalize
+        output = self.output_projection(processed)
+        output = output * (stdev[:, [0], :].repeat(1, self.pred_len, 1))
+        output = output + (means[:, [0], :].repeat(1, self.pred_len, 1))
+        
+        return output
+
+
+def estimate_flops(model: nn.Module, batch_size: int, seq_len: int, d_model: int) -> int:
+    """Estimate FLOPs for a forward pass"""
+    # Simplified FLOP estimation
+    flops = 0
     
-    Args:
-        distance_metric: Name of distance metric to test
-        args: Argparse arguments
-        num_iterations: Number of iterations to run
-        warmup: Number of warmup iterations
+    # Input embedding: batch_size * seq_len * enc_in * d_model * 2
+    flops += batch_size * seq_len * model.enc_in * d_model * 2
     
-    Returns:
-        dict: Results containing timing statistics
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    # GraphSSM (approximate): batch_size * seq_len * d_model * d_model * 4
+    flops += batch_size * seq_len * d_model * d_model * 4
     
-    # Create model with specific distance metric
-    model = GraphSSM(
-        d_model=args.d_model,
-        d_state=args.d_state,
-        d_conv=args.d_conv,
-        expand=args.expand,
-        dt_rank="auto",
-        dt_min=0.001,
-        dt_max=0.1,
-        dt_init="random",
-        dt_scale=1.0,
-        dt_init_floor=1e-4,
-        conv_bias=True,
-        bias=False,
-        use_fast_path=True,
-        distance_metric=distance_metric  # THIS NOW WORKS!
-    ).to(device)
+    # Output projection: batch_size * pred_len * d_model * c_out * 2
+    flops += batch_size * model.pred_len * d_model * model.c_out * 2
     
+    return flops
+
+
+def evaluate_with_profiling(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    criterion,
+    distance_metric: str
+) -> Dict:
+    """Comprehensive evaluation with profiling"""
     model.eval()
     
-    # Create dummy input
-    batch_size = args.batch_size
-    seq_len = args.seq_len
-    x = torch.randn(batch_size, seq_len, args.d_model).to(device)
-    context_len = min(seq_len, 4)
+    # Metrics storage
+    total_loss = 0.0
+    all_preds = []
+    all_trues = []
+    batch_times = []
     
-    # Warmup
+    # FLOP estimation
+    first_batch = next(iter(loader))
+    batch_size = first_batch[0].shape[0]
+    seq_len = first_batch[0].shape[1]
+    d_model = model.d_model
+    flops_per_batch = estimate_flops(model, batch_size, seq_len, d_model)
+    total_flops = 0
+    
+    # Timing
+    start_time = time.time()
+    
     with torch.no_grad():
-        for _ in range(warmup):
-            _ = model(x, context_len)
-    
-    # Benchmark
-    times = []
-    if device.type == 'cuda':
-        torch.cuda.synchronize()
-    
-    with torch.no_grad():
-        for _ in range(num_iterations):
-            start_time = time.perf_counter()
+        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(loader):
+            batch_start = time.time()
             
-            output = model(x, context_len)
+            batch_x = batch_x.to(device).float()
+            batch_y = batch_y.to(device).float()
+            batch_x_mark = batch_x_mark.to(device).float()
+            batch_y_mark = batch_y_mark.to(device).float()
+            
+            dec_inp = torch.zeros_like(batch_y).float().to(device)
+            
+            # Synchronize for accurate timing
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            
+            outputs = model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
             
             if device.type == 'cuda':
                 torch.cuda.synchronize()
             
-            end_time = time.perf_counter()
-            times.append((end_time - start_time) * 1000)  # Convert to ms
+            batch_end = time.time()
+            batch_times.append(batch_end - batch_start)
+            
+            # Trim batch_y if needed
+            if batch_y.shape[1] > outputs.shape[1]:
+                batch_y = batch_y[:, -outputs.shape[1]:, :]
+            
+            loss = criterion(outputs, batch_y)
+            total_loss += loss.item() * batch_x.size(0)
+            
+            all_preds.append(outputs.cpu().numpy())
+            all_trues.append(batch_y.cpu().numpy())
+            
+            total_flops += flops_per_batch
     
-    times = np.array(times)
+    end_time = time.time()
+    total_time = end_time - start_time
+    
+    # Compute metrics
+    preds = np.concatenate(all_preds, axis=0)
+    trues = np.concatenate(all_trues, axis=0)
+    
+    mae = np.mean(np.abs(preds - trues))
+    mse = np.mean((preds - trues) ** 2)
+    rmse = np.sqrt(mse)
+    mape = np.mean(np.abs((preds - trues) / (trues + 1e-8))) * 100
+    
+    # Performance metrics
+    avg_batch_time = np.mean(batch_times)
+    tflops = (total_flops / total_time) / 1e12
     
     return {
-        'metric': distance_metric,
-        'mean_ms': np.mean(times),
-        'std_ms': np.std(times),
-        'min_ms': np.min(times),
-        'max_ms': np.max(times),
-        'median_ms': np.median(times),
-        'all_times': times
+        'distance_metric': distance_metric,
+        'mae': mae,
+        'mse': mse,
+        'rmse': rmse,
+        'mape': mape,
+        'total_loss': total_loss / len(loader.dataset),
+        'total_time': total_time,
+        'avg_batch_time': avg_batch_time,
+        'tflops': tflops,
+        'num_batches': len(loader),
+        'batch_times': batch_times,
     }
 
 
-def create_visualization(results, args):
-    """
-    Create matplotlib visualizations of benchmark results
+def run_benchmark_for_metric(
+    distance_metric: str,
+    args: argparse.Namespace,
+    test_loader: DataLoader,
+    device: torch.device
+) -> Dict:
+    """Run complete benchmark for a single distance metric"""
     
-    Args:
-        results: List of result dictionaries
-        args: Argparse arguments
-    """
-    metrics = [r['metric'] for r in results]
-    mean_times = [r['mean_ms'] for r in results]
-    std_times = [r['std_ms'] for r in results]
+    print(f"\n{'='*70}")
+    print(f"Benchmarking Distance Metric: {distance_metric.upper()}")
+    print(f"{'='*70}")
     
-    # Create figure with multiple subplots
-    fig, axes = plt.subplots(2, 2, figsize=(15, 11))
-    fig.suptitle(f'GraphSSM Distance Metric Performance Comparison\n'
-                 f'seq_len={args.seq_len}, batch_size={args.batch_size}, d_model={args.d_model}',
-                 fontsize=16, fontweight='bold')
+    # Create model with this distance metric
+    model = TimeSeriesForecaster(
+        enc_in=args.enc_in,
+        c_out=args.c_out,
+        seq_len=args.seq_len,
+        pred_len=args.pred_len,
+        d_model=args.d_model,
+        d_state=args.d_state,
+        d_conv=args.d_conv,
+        expand=args.expand,
+        distance_metric=distance_metric
+    ).to(device)
+    
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {num_params:,}")
+    
+    criterion = nn.MSELoss()
+    
+    # Run evaluation
+    results = evaluate_with_profiling(model, test_loader, device, criterion, distance_metric)
+    
+    # Print results
+    print(f"\n{'='*70}")
+    print(f"RESULTS - {distance_metric.upper()}")
+    print(f"{'='*70}")
+    print(f"Test Loss (MSE): {results['total_loss']:.6f}")
+    print(f"MAE:  {results['mae']:.6f}")
+    print(f"MSE:  {results['mse']:.6f}")
+    print(f"RMSE: {results['rmse']:.6f}")
+    print(f"MAPE: {results['mape']:.6f}%")
+    print(f"{'='*70}")
+    print(f"PERFORMANCE METRICS")
+    print(f"{'='*70}")
+    print(f"Total time: {results['total_time']:.4f}s")
+    print(f"Average batch time: {results['avg_batch_time']:.6f}s")
+    print(f"Batches processed: {results['num_batches']}")
+    print(f"**TFLOPS: {results['tflops']:.2f}**")
+    print(f"{'='*70}")
+    
+    return results
+
+
+def create_comprehensive_visualization(all_results: List[Dict], args: argparse.Namespace):
+    """Create comprehensive multi-panel visualization"""
+    
+    metrics = [r['distance_metric'] for r in all_results]
+    
+    fig = plt.figure(figsize=(18, 12))
+    gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
     
     # Color scheme
-    colors = plt.cm.viridis(np.linspace(0.2, 0.9, len(metrics)))
+    colors = plt.cm.Set2(np.linspace(0, 1, len(metrics)))
     
-    # 1. Bar chart with error bars
-    ax1 = axes[0, 0]
-    bars = ax1.bar(metrics, mean_times, yerr=std_times, capsize=5, color=colors, 
-                   alpha=0.8, edgecolor='black', linewidth=1.5)
-    ax1.set_ylabel('Time (ms)', fontsize=12, fontweight='bold')
-    ax1.set_xlabel('Distance Metric', fontsize=12, fontweight='bold')
-    ax1.set_title('Mean Inference Time (with std dev)', fontsize=13, fontweight='bold')
-    ax1.grid(axis='y', alpha=0.3, linestyle='--')
-    ax1.set_axisbelow(True)
+    # 1. Forecasting Accuracy Metrics (MAE, MSE, RMSE, MAPE)
+    ax1 = fig.add_subplot(gs[0, :2])
+    x = np.arange(len(metrics))
+    width = 0.2
     
-    # Add value labels on bars
-    for bar, mean_val, std_val in zip(bars, mean_times, std_times):
+    mae_vals = [r['mae'] for r in all_results]
+    rmse_vals = [r['rmse'] for r in all_results]
+    mape_vals = [r['mape'] for r in all_results]
+    
+    ax1.bar(x - width, mae_vals, width, label='MAE', alpha=0.8)
+    ax1.bar(x, rmse_vals, width, label='RMSE', alpha=0.8)
+    ax1.bar(x + width, mape_vals, width, label='MAPE (%)', alpha=0.8)
+    
+    ax1.set_ylabel('Error', fontsize=11, fontweight='bold')
+    ax1.set_xlabel('Distance Metric', fontsize=11, fontweight='bold')
+    ax1.set_title('Forecasting Accuracy Comparison', fontsize=13, fontweight='bold')
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(metrics)
+    ax1.legend()
+    ax1.grid(axis='y', alpha=0.3)
+    
+    # 2. Inference Speed (Total Time)
+    ax2 = fig.add_subplot(gs[0, 2])
+    times = [r['total_time'] for r in all_results]
+    bars = ax2.barh(metrics, times, color=colors, alpha=0.8, edgecolor='black')
+    ax2.set_xlabel('Time (seconds)', fontsize=11, fontweight='bold')
+    ax2.set_title('Total Inference Time', fontsize=12, fontweight='bold')
+    ax2.grid(axis='x', alpha=0.3)
+    
+    # Add value labels
+    for i, (bar, time_val) in enumerate(zip(bars, times)):
+        ax2.text(time_val, i, f' {time_val:.2f}s', va='center', fontsize=9)
+    
+    # 3. TFLOPS Comparison
+    ax3 = fig.add_subplot(gs[1, 0])
+    tflops = [r['tflops'] for r in all_results]
+    bars3 = ax3.bar(metrics, tflops, color=colors, alpha=0.8, edgecolor='black')
+    ax3.set_ylabel('TFLOPS', fontsize=11, fontweight='bold')
+    ax3.set_title('Computational Throughput', fontsize=12, fontweight='bold')
+    ax3.grid(axis='y', alpha=0.3)
+    
+    for bar, val in zip(bars3, tflops):
         height = bar.get_height()
-        ax1.text(bar.get_x() + bar.get_width()/2., height,
-                f'{mean_val:.2f}±{std_val:.2f}',
-                ha='center', va='bottom', fontsize=9, fontweight='bold')
+        ax3.text(bar.get_x() + bar.get_width()/2., height,
+                f'{val:.2f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
     
-    # 2. Box plot showing distribution
-    ax2 = axes[0, 1]
-    all_times_data = [r['all_times'] for r in results]
-    bp = ax2.boxplot(all_times_data, labels=metrics, patch_artist=True,
-                     showmeans=True, meanline=True,
-                     boxprops=dict(linewidth=1.5),
-                     whiskerprops=dict(linewidth=1.5),
-                     capprops=dict(linewidth=1.5),
-                     medianprops=dict(linewidth=2, color='red'),
-                     meanprops=dict(linewidth=2, color='blue', linestyle='--'))
-    
+    # 4. Batch Time Distribution (Box Plot)
+    ax4 = fig.add_subplot(gs[1, 1])
+    batch_times_data = [np.array(r['batch_times']) * 1000 for r in all_results]  # Convert to ms
+    bp = ax4.boxplot(batch_times_data, labels=metrics, patch_artist=True)
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
         patch.set_alpha(0.7)
+    ax4.set_ylabel('Batch Time (ms)', fontsize=11, fontweight='bold')
+    ax4.set_title('Batch Processing Time Distribution', fontsize=12, fontweight='bold')
+    ax4.grid(axis='y', alpha=0.3)
     
-    ax2.set_ylabel('Time (ms)', fontsize=12, fontweight='bold')
-    ax2.set_xlabel('Distance Metric', fontsize=12, fontweight='bold')
-    ax2.set_title('Distribution of Inference Times', fontsize=13, fontweight='bold')
-    ax2.grid(axis='y', alpha=0.3, linestyle='--')
-    ax2.set_axisbelow(True)
-    ax2.legend([bp['medians'][0], bp['means'][0]], 
-               ['Median', 'Mean'], loc='upper right')
+    # 5. Speed Ranking
+    ax5 = fig.add_subplot(gs[1, 2])
+    sorted_by_speed = sorted(all_results, key=lambda x: x['total_time'])
+    sorted_metrics = [r['distance_metric'] for r in sorted_by_speed]
+    sorted_times = [r['total_time'] for r in sorted_by_speed]
+    speedups = [sorted_times[0] / t for t in sorted_times]
     
-    # 3. Relative speedup chart
-    ax3 = axes[1, 0]
-    baseline_time = mean_times[0]  # Use first metric as baseline
-    speedups = [baseline_time / t for t in mean_times]
-    bars3 = ax3.bar(metrics, speedups, color=colors, alpha=0.8, 
-                    edgecolor='black', linewidth=1.5)
-    ax3.axhline(y=1.0, color='red', linestyle='--', linewidth=2, 
-                label=f'Baseline ({metrics[0]})', zorder=5)
-    ax3.set_ylabel('Relative Speed', fontsize=12, fontweight='bold')
-    ax3.set_xlabel('Distance Metric', fontsize=12, fontweight='bold')
-    ax3.set_title(f'Relative Speedup (vs {metrics[0]})', fontsize=13, fontweight='bold')
-    ax3.legend(fontsize=10)
-    ax3.grid(axis='y', alpha=0.3, linestyle='--')
-    ax3.set_axisbelow(True)
+    y_pos = np.arange(len(sorted_metrics))
+    bars5 = ax5.barh(y_pos, speedups, color=colors, alpha=0.8, edgecolor='black')
+    ax5.set_yticks(y_pos)
+    ax5.set_yticklabels(sorted_metrics)
+    ax5.set_xlabel('Relative Speed', fontsize=11, fontweight='bold')
+    ax5.set_title('Speed Ranking (vs Fastest)', fontsize=12, fontweight='bold')
+    ax5.axvline(x=1.0, color='red', linestyle='--', linewidth=2)
+    ax5.grid(axis='x', alpha=0.3)
     
-    # Add percentage labels
-    for bar, speedup, mean_t in zip(bars3, speedups, mean_times):
-        height = bar.get_height()
-        percentage = (speedup - 1) * 100
-        color = 'green' if percentage > 0 else 'red'
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{speedup:.3f}x\n({percentage:+.1f}%)\n{mean_t:.2f}ms',
-                ha='center', va='bottom', fontsize=8, fontweight='bold',
-                color=color)
+    for i, (bar, speedup) in enumerate(zip(bars5, speedups)):
+        ax5.text(speedup, i, f' {speedup:.2f}x', va='center', fontsize=9)
     
-    # 4. Summary statistics table
-    ax4 = axes[1, 1]
-    ax4.axis('tight')
-    ax4.axis('off')
+    # 6. Accuracy Ranking
+    ax6 = fig.add_subplot(gs[2, 0])
+    sorted_by_mae = sorted(all_results, key=lambda x: x['mae'])
+    sorted_metrics_acc = [r['distance_metric'] for r in sorted_by_mae]
+    sorted_mae = [r['mae'] for r in sorted_by_mae]
+    
+    y_pos = np.arange(len(sorted_metrics_acc))
+    bars6 = ax6.barh(y_pos, sorted_mae, color=colors, alpha=0.8, edgecolor='black')
+    ax6.set_yticks(y_pos)
+    ax6.set_yticklabels(sorted_metrics_acc)
+    ax6.set_xlabel('MAE', fontsize=11, fontweight='bold')
+    ax6.set_title('Accuracy Ranking (by MAE)', fontsize=12, fontweight='bold')
+    ax6.grid(axis='x', alpha=0.3)
+    
+    # 7. Summary Table
+    ax7 = fig.add_subplot(gs[2, 1:])
+    ax7.axis('tight')
+    ax7.axis('off')
     
     table_data = []
-    for r in results:
+    for r in all_results:
         table_data.append([
-            r['metric'],
-            f"{r['mean_ms']:.3f}",
-            f"{r['std_ms']:.3f}",
-            f"{r['min_ms']:.3f}",
-            f"{r['max_ms']:.3f}",
-            f"{r['median_ms']:.3f}"
+            r['distance_metric'],
+            f"{r['mae']:.4f}",
+            f"{r['rmse']:.4f}",
+            f"{r['mape']:.2f}",
+            f"{r['total_time']:.2f}",
+            f"{r['tflops']:.2f}"
         ])
     
-    table = ax4.table(cellText=table_data,
-                     colLabels=['Metric', 'Mean', 'Std', 'Min', 'Max', 'Median'],
-                     cellLoc='center',
-                     loc='center',
-                     colWidths=[0.15, 0.14, 0.14, 0.13, 0.13, 0.14])
+    table = ax7.table(
+        cellText=table_data,
+        colLabels=['Metric', 'MAE', 'RMSE', 'MAPE(%)', 'Time(s)', 'TFLOPS'],
+        cellLoc='center',
+        loc='center',
+        colWidths=[0.15, 0.15, 0.15, 0.15, 0.15, 0.15]
+    )
     
     table.auto_set_font_size(False)
     table.set_fontsize(10)
     table.scale(1, 2.5)
     
-    # Style header row
+    # Style header
     for i in range(6):
-        table[(0, i)].set_facecolor('#2E86AB')
-        table[(0, i)].set_text_props(weight='bold', color='white', fontsize=11)
+        table[(0, i)].set_facecolor('#4A90E2')
+        table[(0, i)].set_text_props(weight='bold', color='white')
     
-    # Alternate row colors and highlight fastest
-    fastest_idx = mean_times.index(min(mean_times))
+    # Highlight best values
+    best_mae_idx = min(range(len(all_results)), key=lambda i: all_results[i]['mae'])
+    best_speed_idx = min(range(len(all_results)), key=lambda i: all_results[i]['total_time'])
+    
     for i in range(1, len(table_data) + 1):
-        for j in range(6):
-            if i - 1 == fastest_idx:
-                table[(i, j)].set_facecolor('#90EE90')  # Light green for fastest
-                table[(i, j)].set_text_props(weight='bold')
-            elif i % 2 == 0:
-                table[(i, j)].set_facecolor('#f5f5f5')
+        if i - 1 == best_mae_idx:
+            table[(i, 1)].set_facecolor('#90EE90')
+            table[(i, 1)].set_text_props(weight='bold')
+        if i - 1 == best_speed_idx:
+            table[(i, 4)].set_facecolor('#90EE90')
+            table[(i, 4)].set_text_props(weight='bold')
     
-    ax4.set_title('Summary Statistics (all times in ms)', 
-                  fontsize=13, fontweight='bold', pad=20)
+    ax7.set_title('Summary Statistics', fontsize=13, fontweight='bold', pad=20)
     
-    plt.tight_layout()
+    # Main title
+    fig.suptitle(
+        f'GraphSSM Distance Metric Comprehensive Benchmark\n'
+        f'Dataset: {args.data} | Seq: {args.seq_len} | Pred: {args.pred_len} | Model: d_model={args.d_model}',
+        fontsize=15, fontweight='bold', y=0.98
+    )
     
-    # Save figure
-    output_path = os.path.join(args.output_dir, 'distance_metric_benchmark.png')
+    # Save
+    output_path = os.path.join(args.output_dir, f'comprehensive_benchmark_{args.data}.png')
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"\n📊 Visualization saved to: {output_path}")
+    print(f"\nVisualization saved to: {output_path}")
     
-    # Also save as PDF for publication quality
-    pdf_path = os.path.join(args.output_dir, 'distance_metric_benchmark.pdf')
+    pdf_path = os.path.join(args.output_dir, f'comprehensive_benchmark_{args.data}.pdf')
     plt.savefig(pdf_path, bbox_inches='tight')
-    print(f"📊 PDF version saved to: {pdf_path}")
+    print(f"PDF saved to: {pdf_path}")
     
     if not args.no_display:
         plt.show()
+    
+    plt.close()
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Benchmark GraphSSM distance metrics')
+    parser = argparse.ArgumentParser(description='Comprehensive Distance Metric Benchmark on ETT Dataset')
     
-    # Model parameters
-    parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
-    parser.add_argument('--d_state', type=int, default=16, help='State dimension')
-    parser.add_argument('--d_conv', type=int, default=4, help='Conv kernel size')
-    parser.add_argument('--expand', type=int, default=2, help='Expansion ratio')
+    # Data config
+    parser.add_argument("--data", type=str, default="ETTm1", help="dataset type")
+    parser.add_argument("--root_path", type=str, default=os.path.expanduser("/data/eval_pipelines/datasets/ETT-small"))
+    parser.add_argument("--data_path", type=str, default="ETTm1.csv")
+    parser.add_argument("--features", type=str, default="M")
+    parser.add_argument("--target", type=str, default="OT")
+    parser.add_argument("--freq", type=str, default="t")
+    parser.add_argument("--checkpoints", type=str, default=os.path.expanduser("~/data/checkpoints/"))
     
-    # Benchmark parameters
-    parser.add_argument('--seq_len', type=int, default=96, help='Sequence length')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--num_iterations', type=int, default=50, 
-                       help='Number of benchmark iterations')
-    parser.add_argument('--warmup', type=int, default=5, 
-                       help='Number of warmup iterations')
-    parser.add_argument('--cpu', action='store_true', help='Force CPU usage')
+    # Task config
+    parser.add_argument("--seq_len", type=int, default=96)
+    parser.add_argument("--label_len", type=int, default=48)
+    parser.add_argument("--pred_len", type=int, default=24)
+    parser.add_argument("--seasonal_patterns", type=str, default="Monthly")
+    parser.add_argument("--inverse", action="store_true", default=False)
+    
+    # Model config
+    parser.add_argument("--enc_in", type=int, default=7)
+    parser.add_argument("--dec_in", type=int, default=7)
+    parser.add_argument("--c_out", type=int, default=7)
+    parser.add_argument("--d_model", type=int, default=512)
+    parser.add_argument("--d_state", type=int, default=16)
+    parser.add_argument("--d_conv", type=int, default=4)
+    parser.add_argument("--expand", type=int, default=2)
+    
+    # Benchmark config
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=3047)
+    parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--metrics", type=str, nargs='+', 
+                       default=['cosine', 'euclidean', 'gaussian', 'manhattan', 'norm2'])
     
     # Output
-    parser.add_argument('--output_dir', type=str, default='./benchmark_results', 
-                       help='Directory to save results')
-    parser.add_argument('--metrics', type=str, nargs='+', 
-                       default=['cosine', 'euclidean', 'gaussian', 'manhattan', 'norm2'],
-                       help='Distance metrics to benchmark')
-    parser.add_argument('--no_display', action='store_true',
-                       help='Do not display plot (only save to file)')
+    parser.add_argument("--output_dir", type=str, default="./benchmark_results")
+    parser.add_argument("--no_display", action="store_true")
+    
+    # Required for data_provider
+    parser.add_argument("--task_name", type=str, default="long_term_forecast")
+    parser.add_argument("--is_training", type=int, default=0)
+    parser.add_argument("--model_id", type=str, default="test")
+    parser.add_argument("--model", type=str, default="GraphSSM")
+    parser.add_argument("--embed", type=str, default="timeF")
     
     args = parser.parse_args()
     
-    # Create output directory
+    # Setup
+    set_seed(args.seed)
     os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Device info
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    
     print("=" * 70)
-    print("GraphSSM Distance Metric Benchmark")
+    print("GraphSSM Distance Metric Comprehensive Benchmark")
     print("=" * 70)
     print(f"Device: {device}")
     if device.type == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-    print(f"Sequence length: {args.seq_len}")
-    print(f"Batch size: {args.batch_size}")
-    print(f"Model dimension: {args.d_model}")
-    print(f"Iterations: {args.num_iterations} (+ {args.warmup} warmup)")
-    print(f"Metrics to test: {', '.join(args.metrics)}")
+    print(f"Dataset: {args.data}")
+    print(f"Sequence length: {args.seq_len}, Prediction length: {args.pred_len}")
+    print(f"Distance metrics: {', '.join(args.metrics)}")
     print("=" * 70)
     
-    # Run benchmarks
-    results = []
-    for i, metric in enumerate(args.metrics, 1):
-        print(f"\n[{i}/{len(args.metrics)}] Benchmarking: {metric.upper()}")
-        print("-" * 70)
-        
-        try:
-            result = benchmark_distance_metric(metric, args, args.num_iterations, args.warmup)
-            results.append(result)
-            
-            print(f"  Mean time: {result['mean_ms']:.3f} ± {result['std_ms']:.3f} ms")
-            print(f"  Min time:  {result['min_ms']:.3f} ms")
-            print(f"  Max time:  {result['max_ms']:.3f} ms")
-            print(f"  Median:    {result['median_ms']:.3f} ms")
-        except Exception as e:
-            print(f"  ERROR: Failed to benchmark {metric}: {e}")
-            continue
+    # Load test data
+    print("\nLoading test data...")
+    test_data, test_loader = data_provider(args, flag='test')
+    print(f"Test dataset loaded: {len(test_data)} samples, {len(test_loader)} batches")
     
-    if len(results) == 0:
+    # Run benchmarks
+    all_results = []
+    for i, metric in enumerate(args.metrics, 1):
+        print(f"\n[{i}/{len(args.metrics)}] Processing: {metric}")
+        try:
+            results = run_benchmark_for_metric(metric, args, test_loader, device)
+            all_results.append(results)
+        except Exception as e:
+            print(f"ERROR benchmarking {metric}: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    if not all_results:
         print("\nNo successful benchmarks. Exiting.")
         return
     
-    # Print summary
-    print("\n" + "=" * 70)
-    print("SUMMARY")
-    print("=" * 70)
-    
-    sorted_results = sorted(results, key=lambda x: x['mean_ms'])
-    fastest = sorted_results[0]
-    slowest = sorted_results[-1]
-    
-    print(f"FASTEST: {fastest['metric']} ({fastest['mean_ms']:.3f} ms)")
-    print(f"SLOWEST: {slowest['metric']} ({slowest['mean_ms']:.3f} ms)")
-    print(f"Speedup: {slowest['mean_ms'] / fastest['mean_ms']:.3f}x faster")
-    
-    print("\nRankings (fastest to slowest):")
-    for i, r in enumerate(sorted_results, 1):
-        speedup = fastest['mean_ms'] / r['mean_ms']
-        print(f"  {i}. {r['metric']:12s} - {r['mean_ms']:7.3f} ms ({speedup:.3f}x)")
-    
-    # Save results to CSV
-    csv_path = os.path.join(args.output_dir, 'benchmark_results.csv')
-    df = pd.DataFrame([{
-        'metric': r['metric'],
-        'mean_ms': r['mean_ms'],
-        'std_ms': r['std_ms'],
-        'min_ms': r['min_ms'],
-        'max_ms': r['max_ms'],
-        'median_ms': r['median_ms']
-    } for r in results])
-    df = df.sort_values('mean_ms')  # Sort by speed
+    # Save CSV
+    csv_path = os.path.join(args.output_dir, f'benchmark_results_{args.data}.csv')
+    df = pd.DataFrame(all_results)
     df.to_csv(csv_path, index=False)
     print(f"\nResults saved to: {csv_path}")
     
+    # Print final summary
+    print("\n" + "=" * 70)
+    print("FINAL SUMMARY")
+    print("=" * 70)
+    
+    best_acc = min(all_results, key=lambda x: x['mae'])
+    best_speed = min(all_results, key=lambda x: x['total_time'])
+    
+    print(f"BEST ACCURACY: {best_acc['distance_metric']} (MAE: {best_acc['mae']:.6f})")
+    print(f"FASTEST:       {best_speed['distance_metric']} (Time: {best_speed['total_time']:.2f}s)")
+    
     # Create visualization
-    print("\nCreating visualization...")
-    create_visualization(results, args)
+    print("\nGenerating comprehensive visualization...")
+    create_comprehensive_visualization(all_results, args)
     
     print("\nBenchmark complete!")
 
