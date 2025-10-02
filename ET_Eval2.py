@@ -1,428 +1,364 @@
 """
-GraphSSM Time Series Forecasting Evaluation Script
+Distance Metric Benchmarking for GraphSSM
 
-This script is designed to work with the following directory structure:
-- eval_forecasting.py: /data/
-- gg_ssms repository: /workspace/
-- ETDataset: /data/datasets/ETDataset/
-- Model checkpoints: /data/checkpoints/
-- Results: /data/results/
+This script tests different distance metrics (cosine, euclidean, gaussian, manhattan, norm2)
+to measure their impact on GraphSSM inference speed and creates visualization plots.
 
-The script imports GraphSSM from the gg_ssms repository and uses MambaTS
-data providers for time series forecasting evaluation on the ETT dataset.
+REQUIRES: Modified main.py with distance_metric parameter support
+
+Usage:
+    python benchmark_distances.py --seq_len 96 --pred_len 24 --batch_size 32
 """
 
 import argparse
-import math
 import os
-import random
 import sys
 import time
-from typing import Tuple, Dict, Any
-
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torch.profiler import profile, record_function, ProfilerActivity
-import matplotlib.pyplot as plt
+from matplotlib import pyplot as plt
+import pandas as pd
 
-# Add MambaTS to path to use their data providers
-# Since eval_forecasting.py is now in ~/data and gg_ssms repo is in ~/workspace
+# Add paths (same as eval_forecasting.py)
 gg_ssms_path = os.path.expanduser("/workspace")
 mamba_ts_path = os.path.join(gg_ssms_path, "MambaTS")
-
-# Check if paths exist and provide helpful error messages
-if not os.path.exists(gg_ssms_path):
-    print(f"ERROR: GG_SSMS repository not found at {gg_ssms_path}")
-    print("Please ensure the gg_ssms repository is located at /workspace")
-    sys.exit(1)
-
-if not os.path.exists(mamba_ts_path):
-    print(f"ERROR: MambaTS not found at {mamba_ts_path}")
-    print("Please ensure MambaTS is located in the gg_ssms repository")
-    sys.exit(1)
-
 sys.path.append(mamba_ts_path)
-
-from data_provider.data_factory import data_provider
-from utils.tools import set_seed
-
-# Import GraphSSM directly from main.py in the gg_ssms repo
-main_py_path = os.path.join(gg_ssms_path, "core", "graph_ssm", "main.py")
-if not os.path.exists(main_py_path):
-    print(f"ERROR: main.py not found at {main_py_path}")
-    print("Please ensure the core/graph_ssm/main.py file exists in the gg_ssms repository")
-    sys.exit(1)
-
 sys.path.append(os.path.join(gg_ssms_path, "core", "graph_ssm"))
+
 from main import GraphSSM
 
 
-class TFLOPSCalculator:
-    """Utility class for calculating TFLOPS during model inference"""
+def benchmark_distance_metric(distance_metric, args, num_iterations=50, warmup=5):
+    """
+    Benchmark a specific distance metric
     
-    def __init__(self):
-        self.total_flops = 0
-        self.total_time = 0.0
-        self.batch_count = 0
-        self.start_time = None
-        
-    def start_timing(self):
-        """Start timing for a batch"""
-        self.start_time = time.time()
-        
-    def end_timing(self):
-        """End timing for a batch and accumulate time"""
-        if self.start_time is not None:
-            batch_time = time.time() - self.start_time
-            self.total_time += batch_time
-            self.batch_count += 1
-            self.start_time = None
-            return batch_time
-        return 0.0
+    Args:
+        distance_metric: Name of distance metric to test
+        args: Argparse arguments
+        num_iterations: Number of iterations to run
+        warmup: Number of warmup iterations
     
-    def add_flops(self, flops: int):
-        """Add FLOPs for a batch"""
-        self.total_flops += flops
-        
-    def calculate_tflops(self) -> float:
-        """Calculate TFLOPS from accumulated data"""
-        if self.total_time > 0:
-            return (self.total_flops / 1e12) / self.total_time
-        return 0.0
+    Returns:
+        dict: Results containing timing statistics
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
     
-    def reset(self):
-        """Reset counters"""
-        self.total_flops = 0
-        self.total_time = 0.0
-        self.batch_count = 0
-        self.start_time = None
-
-
-def count_linear_flops(input_shape: tuple, output_features: int, bias: bool = True) -> int:
-    """Count FLOPs for a linear layer"""
-    batch_size, seq_len, input_features = input_shape
-    flops_per_output = input_features * 2  # multiply + add
-    if bias:
-        flops_per_output += 1  # bias addition
-    total_outputs = batch_size * seq_len * output_features
-    return total_outputs * flops_per_output
-
-
-def count_normalization_flops(input_shape: tuple) -> int:
-    """Count FLOPs for normalization operations"""
-    batch_size, seq_len, features = input_shape
-    mean_flops = batch_size * features * seq_len
-    variance_flops = batch_size * seq_len * features * 3  # subtract, square, add
-    sqrt_flops = batch_size * features
-    div_flops = batch_size * seq_len * features
-    return mean_flops + variance_flops + sqrt_flops + div_flops
-
-
-def estimate_graphssm_flops(input_shape: tuple, d_model: int, d_state: int, d_conv: int, expand: int) -> int:
-    """Estimate FLOPs for GraphSSM operations"""
-    batch_size, seq_len, _ = input_shape
-    input_proj_flops = batch_size * seq_len * d_model * d_model * 2
-    state_flops = batch_size * seq_len * d_state * d_state * 2
-    conv_flops = batch_size * seq_len * d_model * d_conv * 2
-    output_proj_flops = batch_size * seq_len * d_model * d_model * 2
-    total_flops = (input_proj_flops + state_flops + conv_flops + output_proj_flops) * expand
-    return int(total_flops)
-
-
-def count_model_flops(model: nn.Module, input_shape: tuple, args: argparse.Namespace) -> int:
-    """Count total FLOPs for the TimeSeriesForecaster model"""
-    batch_size, seq_len, enc_in = input_shape
-    total_flops = 0
-    input_embedding_flops = count_linear_flops(input_shape, args.d_model, bias=False)
-    total_flops += input_embedding_flops
-    norm_flops = count_normalization_flops(input_shape) * 2
-    total_flops += norm_flops
-    graphssm_input_shape = (batch_size, seq_len, args.d_model)
-    graphssm_flops = estimate_graphssm_flops(
-        graphssm_input_shape, args.d_model, args.d_state, args.d_conv, args.expand
-    )
-    total_flops += graphssm_flops
-    output_shape = (batch_size, args.pred_len, args.d_model)
-    output_proj_flops = count_linear_flops(output_shape, args.c_out, bias=False)
-    total_flops += output_proj_flops
-    return total_flops
-
-
-class TimeSeriesForecaster(nn.Module):
-    def __init__(
-        self,
-        enc_in: int,
-        c_out: int,
-        seq_len: int,
-        pred_len: int,
-        d_model: int = 512,
-        d_state: int = 16,
-        d_conv: int = 4,
-        expand: int = 2,
-        distance_metric: str = "cosine",  # NEW: distance formula argument
-    ) -> None:
-        super().__init__()
-        self.seq_len = seq_len
-        self.pred_len = pred_len
-        self.enc_in = enc_in
-        self.c_out = c_out
-        self.d_model = d_model
-        self.distance_metric = distance_metric  # Store distance formula
-        
-        # Simple embedding layer
-        self.input_embedding = nn.Linear(enc_in, d_model)
-        
-        # Core GraphSSM with distance formula
-        self.graph_ssm = GraphSSM(
-            d_model=d_model, 
-            d_state=d_state, 
-            d_conv=d_conv, 
-            expand=expand,
-            dt_rank="auto",
-            dt_min=0.001,
-            dt_max=0.1,
-            dt_init="random",
-            dt_scale=1.0,
-            dt_init_floor=1e-4,
-            conv_bias=True,
-            bias=False,
-            use_fast_path=True,
-            distance_metric=self.distance_metric  # Pass to GraphSSM
-        )
-        
-        self.output_projection = nn.Linear(d_model, c_out)
-
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-        b, seq_len, enc_in = x_enc.shape
-        means = x_enc.mean(1, keepdim=True).detach()
-        x_enc = x_enc - means
-        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
-        x_enc /= stdev
-        embedded = self.input_embedding(x_enc)
-        context_len = min(seq_len, 4)
-        processed = self.graph_ssm(embedded, context_len)
-        if processed.shape[1] >= self.pred_len:
-            processed = processed[:, -self.pred_len:, :]
-        else:
-            last_timestep = processed[:, -1:, :].repeat(1, self.pred_len, 1)
-            processed = last_timestep
-        output = self.output_projection(processed)
-        output = output * (stdev[:, [0], :].repeat(1, self.pred_len, 1))
-        output = output + (means[:, [0], :].repeat(1, self.pred_len, 1))
-        return output
-
-
-def load_pretrained_model(model_path: str, args: argparse.Namespace, device: torch.device):
-    """Load a pre-trained model from checkpoint"""
-    model = TimeSeriesForecaster(
-        enc_in=args.enc_in,
-        c_out=args.c_out,
-        seq_len=args.seq_len,
-        pred_len=args.pred_len,
+    # Create model with specific distance metric
+    model = GraphSSM(
         d_model=args.d_model,
         d_state=args.d_state,
         d_conv=args.d_conv,
         expand=args.expand,
-        distance_metric=args.distance,  # Pass command-line distance
+        dt_rank="auto",
+        dt_min=0.001,
+        dt_max=0.1,
+        dt_init="random",
+        dt_scale=1.0,
+        dt_init_floor=1e-4,
+        conv_bias=True,
+        bias=False,
+        use_fast_path=True,
+        distance_metric=distance_metric  # THIS NOW WORKS!
     ).to(device)
     
-    if os.path.exists(model_path):
-        checkpoint = torch.load(model_path, map_location=device)
-        if 'model_state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"Loaded pre-trained model from {model_path}")
-        else:
-            model.load_state_dict(checkpoint)
-            print(f"Loaded pre-trained model from {model_path}")
-    else:
-        print(f"No pre-trained model found at {model_path}")
-        print("Using randomly initialized model for demonstration...")
-    
     model.eval()
-    return model
+    
+    # Create dummy input
+    batch_size = args.batch_size
+    seq_len = args.seq_len
+    x = torch.randn(batch_size, seq_len, args.d_model).to(device)
+    context_len = min(seq_len, 4)
+    
+    # Warmup
+    with torch.no_grad():
+        for _ in range(warmup):
+            _ = model(x, context_len)
+    
+    # Benchmark
+    times = []
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    
+    with torch.no_grad():
+        for _ in range(num_iterations):
+            start_time = time.perf_counter()
+            
+            output = model(x, context_len)
+            
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            
+            end_time = time.perf_counter()
+            times.append((end_time - start_time) * 1000)  # Convert to ms
+    
+    times = np.array(times)
+    
+    return {
+        'metric': distance_metric,
+        'mean_ms': np.mean(times),
+        'std_ms': np.std(times),
+        'min_ms': np.min(times),
+        'max_ms': np.max(times),
+        'median_ms': np.median(times),
+        'all_times': times
+    }
 
 
-def build_argparser() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate core/graph_ssm on MambaTS time series forecasting")
+def create_visualization(results, args):
+    """
+    Create matplotlib visualizations of benchmark results
     
-    # Basic config
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
-    parser.add_argument("--model", type=str, default="GraphSSM", help="Model name")
+    Args:
+        results: List of result dictionaries
+        args: Argparse arguments
+    """
+    metrics = [r['metric'] for r in results]
+    mean_times = [r['mean_ms'] for r in results]
+    std_times = [r['std_ms'] for r in results]
     
-    # Data loader
-    parser.add_argument("--data", type=str, default="ETTh2", help="Dataset type")
-    parser.add_argument("--root_path", type=str, default=os.path.expanduser("~/data/datasets/ETDataset"), help="Root path of the data file")
-    parser.add_argument("--data_path", type=str, default="ETTh2.csv", help="Data file")
-    parser.add_argument("--features", type=str, default="M", help="Forecasting task, options:[M, S, MS]")
-    parser.add_argument("--target", type=str, default="OT", help="Target feature in S or MS task")
-    parser.add_argument("--freq", type=str, default="h", help="Freq for time features encoding")
-    parser.add_argument("--timeenc", type=int, default=0, help="Time features encoding")
-    parser.add_argument("--inverse", action="store_true", help="Inverse output data", default=False)
+    # Create figure with multiple subplots
+    fig, axes = plt.subplots(2, 2, figsize=(15, 11))
+    fig.suptitle(f'GraphSSM Distance Metric Performance Comparison\n'
+                 f'seq_len={args.seq_len}, batch_size={args.batch_size}, d_model={args.d_model}',
+                 fontsize=16, fontweight='bold')
     
-    # Forecasting task
-    parser.add_argument("--seq_len", type=int, default=720, help="Input sequence length")
-    parser.add_argument("--pred_len", type=int, default=96, help="Prediction sequence length")
+    # Color scheme
+    colors = plt.cm.viridis(np.linspace(0.2, 0.9, len(metrics)))
     
-    # Model define
-    parser.add_argument("--enc_in", type=int, default=7, help="Encoder input size")
-    parser.add_argument("--c_out", type=int, default=7, help="Output size")
-    parser.add_argument("--d_model", type=int, default=16, help="Dimension of model")
+    # 1. Bar chart with error bars
+    ax1 = axes[0, 0]
+    bars = ax1.bar(metrics, mean_times, yerr=std_times, capsize=5, color=colors, 
+                   alpha=0.8, edgecolor='black', linewidth=1.5)
+    ax1.set_ylabel('Time (ms)', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Distance Metric', fontsize=12, fontweight='bold')
+    ax1.set_title('Mean Inference Time (with std dev)', fontsize=13, fontweight='bold')
+    ax1.grid(axis='y', alpha=0.3, linestyle='--')
+    ax1.set_axisbelow(True)
     
-    # GraphSSM specific
-    parser.add_argument("--d_state", type=int, default=16, help="GraphSSM state size")
-    parser.add_argument("--d_conv", type=int, default=4, help="GraphSSM conv kernel size")
-    parser.add_argument("--expand", type=int, default=2, help="Expansion ratio in GraphSSM")
-    parser.add_argument("--cpu", action="store_true", help="Force CPU even if CUDA is available")
+    # Add value labels on bars
+    for bar, mean_val, std_val in zip(bars, mean_times, std_times):
+        height = bar.get_height()
+        ax1.text(bar.get_x() + bar.get_width()/2., height,
+                f'{mean_val:.2f}±{std_val:.2f}',
+                ha='center', va='bottom', fontsize=9, fontweight='bold')
     
-    # NEW: distance metric CLI argument
-    parser.add_argument("--distance", type=str, default="cosine",
-                        choices=["cosine", "euclidean", "manhattan", "gaussian", "norm2"],
-                        help="Distance formula to use in GraphSSM")
+    # 2. Box plot showing distribution
+    ax2 = axes[0, 1]
+    all_times_data = [r['all_times'] for r in results]
+    bp = ax2.boxplot(all_times_data, labels=metrics, patch_artist=True,
+                     showmeans=True, meanline=True,
+                     boxprops=dict(linewidth=1.5),
+                     whiskerprops=dict(linewidth=1.5),
+                     capprops=dict(linewidth=1.5),
+                     medianprops=dict(linewidth=2, color='red'),
+                     meanprops=dict(linewidth=2, color='blue', linestyle='--'))
     
-    # Optimization
-    parser.add_argument("--batch_size", type=int, default=16, help="Batch size of train input data")
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.7)
     
-    # Inference specific
-    parser.add_argument("--model_path", type=str, default=os.path.expanduser("~/data/checkpoints/best_model.pth"), help="Path to pre-trained model")
-    parser.add_argument("--save_predictions", action="store_true", help="Save predictions to file")
-    parser.add_argument("--mode", type=str, default="inference", choices=["inference", "train", "example"], help="Mode: inference, train, or example")
-    parser.add_argument("--example", action="store_true", help="Run simple example like main.py")
+    ax2.set_ylabel('Time (ms)', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Distance Metric', fontsize=12, fontweight='bold')
+    ax2.set_title('Distribution of Inference Times', fontsize=13, fontweight='bold')
+    ax2.grid(axis='y', alpha=0.3, linestyle='--')
+    ax2.set_axisbelow(True)
+    ax2.legend([bp['medians'][0], bp['means'][0]], 
+               ['Median', 'Mean'], loc='upper right')
     
-    # TFLOPS profiling specific
-    parser.add_argument("--warmup_batches", type=int, default=5, help="Number of warmup batches for accurate timing")
-    parser.add_argument("--save_metrics", action="store_true", help="Save performance metrics to file")
-    parser.add_argument("--profile_detailed", action="store_true", help="Enable detailed profiling with PyTorch profiler")
-    parser.add_argument("--profile_steps", type=int, default=10, help="Number of steps to profile in detailed mode")
+    # 3. Relative speedup chart
+    ax3 = axes[1, 0]
+    baseline_time = mean_times[0]  # Use first metric as baseline
+    speedups = [baseline_time / t for t in mean_times]
+    bars3 = ax3.bar(metrics, speedups, color=colors, alpha=0.8, 
+                    edgecolor='black', linewidth=1.5)
+    ax3.axhline(y=1.0, color='red', linestyle='--', linewidth=2, 
+                label=f'Baseline ({metrics[0]})', zorder=5)
+    ax3.set_ylabel('Relative Speed', fontsize=12, fontweight='bold')
+    ax3.set_xlabel('Distance Metric', fontsize=12, fontweight='bold')
+    ax3.set_title(f'Relative Speedup (vs {metrics[0]})', fontsize=13, fontweight='bold')
+    ax3.legend(fontsize=10)
+    ax3.grid(axis='y', alpha=0.3, linestyle='--')
+    ax3.set_axisbelow(True)
     
-    return parser.parse_args()
+    # Add percentage labels
+    for bar, speedup, mean_t in zip(bars3, speedups, mean_times):
+        height = bar.get_height()
+        percentage = (speedup - 1) * 100
+        color = 'green' if percentage > 0 else 'red'
+        ax3.text(bar.get_x() + bar.get_width()/2., height,
+                f'{speedup:.3f}x\n({percentage:+.1f}%)\n{mean_t:.2f}ms',
+                ha='center', va='bottom', fontsize=8, fontweight='bold',
+                color=color)
+    
+    # 4. Summary statistics table
+    ax4 = axes[1, 1]
+    ax4.axis('tight')
+    ax4.axis('off')
+    
+    table_data = []
+    for r in results:
+        table_data.append([
+            r['metric'],
+            f"{r['mean_ms']:.3f}",
+            f"{r['std_ms']:.3f}",
+            f"{r['min_ms']:.3f}",
+            f"{r['max_ms']:.3f}",
+            f"{r['median_ms']:.3f}"
+        ])
+    
+    table = ax4.table(cellText=table_data,
+                     colLabels=['Metric', 'Mean', 'Std', 'Min', 'Max', 'Median'],
+                     cellLoc='center',
+                     loc='center',
+                     colWidths=[0.15, 0.14, 0.14, 0.13, 0.13, 0.14])
+    
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    table.scale(1, 2.5)
+    
+    # Style header row
+    for i in range(6):
+        table[(0, i)].set_facecolor('#2E86AB')
+        table[(0, i)].set_text_props(weight='bold', color='white', fontsize=11)
+    
+    # Alternate row colors and highlight fastest
+    fastest_idx = mean_times.index(min(mean_times))
+    for i in range(1, len(table_data) + 1):
+        for j in range(6):
+            if i - 1 == fastest_idx:
+                table[(i, j)].set_facecolor('#90EE90')  # Light green for fastest
+                table[(i, j)].set_text_props(weight='bold')
+            elif i % 2 == 0:
+                table[(i, j)].set_facecolor('#f5f5f5')
+    
+    ax4.set_title('Summary Statistics (all times in ms)', 
+                  fontsize=13, fontweight='bold', pad=20)
+    
+    plt.tight_layout()
+    
+    # Save figure
+    output_path = os.path.join(args.output_dir, 'distance_metric_benchmark.png')
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"\n📊 Visualization saved to: {output_path}")
+    
+    # Also save as PDF for publication quality
+    pdf_path = os.path.join(args.output_dir, 'distance_metric_benchmark.pdf')
+    plt.savefig(pdf_path, bbox_inches='tight')
+    print(f"📊 PDF version saved to: {pdf_path}")
+    
+    if not args.no_display:
+        plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Benchmark GraphSSM distance metrics')
+    
+    # Model parameters
+    parser.add_argument('--d_model', type=int, default=512, help='Model dimension')
+    parser.add_argument('--d_state', type=int, default=16, help='State dimension')
+    parser.add_argument('--d_conv', type=int, default=4, help='Conv kernel size')
+    parser.add_argument('--expand', type=int, default=2, help='Expansion ratio')
+    
+    # Benchmark parameters
+    parser.add_argument('--seq_len', type=int, default=96, help='Sequence length')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
+    parser.add_argument('--num_iterations', type=int, default=50, 
+                       help='Number of benchmark iterations')
+    parser.add_argument('--warmup', type=int, default=5, 
+                       help='Number of warmup iterations')
+    parser.add_argument('--cpu', action='store_true', help='Force CPU usage')
+    
+    # Output
+    parser.add_argument('--output_dir', type=str, default='./benchmark_results', 
+                       help='Directory to save results')
+    parser.add_argument('--metrics', type=str, nargs='+', 
+                       default=['cosine', 'euclidean', 'gaussian', 'manhattan', 'norm2'],
+                       help='Distance metrics to benchmark')
+    parser.add_argument('--no_display', action='store_true',
+                       help='Do not display plot (only save to file)')
+    
+    args = parser.parse_args()
+    
+    # Create output directory
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Device info
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    print("=" * 70)
+    print("GraphSSM Distance Metric Benchmark")
+    print("=" * 70)
+    print(f"Device: {device}")
+    if device.type == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+    print(f"Sequence length: {args.seq_len}")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Model dimension: {args.d_model}")
+    print(f"Iterations: {args.num_iterations} (+ {args.warmup} warmup)")
+    print(f"Metrics to test: {', '.join(args.metrics)}")
+    print("=" * 70)
+    
+    # Run benchmarks
+    results = []
+    for i, metric in enumerate(args.metrics, 1):
+        print(f"\n[{i}/{len(args.metrics)}] Benchmarking: {metric.upper()}")
+        print("-" * 70)
+        
+        try:
+            result = benchmark_distance_metric(metric, args, args.num_iterations, args.warmup)
+            results.append(result)
+            
+            print(f"  Mean time: {result['mean_ms']:.3f} ± {result['std_ms']:.3f} ms")
+            print(f"  Min time:  {result['min_ms']:.3f} ms")
+            print(f"  Max time:  {result['max_ms']:.3f} ms")
+            print(f"  Median:    {result['median_ms']:.3f} ms")
+        except Exception as e:
+            print(f"  ERROR: Failed to benchmark {metric}: {e}")
+            continue
+    
+    if len(results) == 0:
+        print("\nNo successful benchmarks. Exiting.")
+        return
+    
+    # Print summary
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    
+    sorted_results = sorted(results, key=lambda x: x['mean_ms'])
+    fastest = sorted_results[0]
+    slowest = sorted_results[-1]
+    
+    print(f"FASTEST: {fastest['metric']} ({fastest['mean_ms']:.3f} ms)")
+    print(f"SLOWEST: {slowest['metric']} ({slowest['mean_ms']:.3f} ms)")
+    print(f"Speedup: {slowest['mean_ms'] / fastest['mean_ms']:.3f}x faster")
+    
+    print("\nRankings (fastest to slowest):")
+    for i, r in enumerate(sorted_results, 1):
+        speedup = fastest['mean_ms'] / r['mean_ms']
+        print(f"  {i}. {r['metric']:12s} - {r['mean_ms']:7.3f} ms ({speedup:.3f}x)")
+    
+    # Save results to CSV
+    csv_path = os.path.join(args.output_dir, 'benchmark_results.csv')
+    df = pd.DataFrame([{
+        'metric': r['metric'],
+        'mean_ms': r['mean_ms'],
+        'std_ms': r['std_ms'],
+        'min_ms': r['min_ms'],
+        'max_ms': r['max_ms'],
+        'median_ms': r['median_ms']
+    } for r in results])
+    df = df.sort_values('mean_ms')  # Sort by speed
+    df.to_csv(csv_path, index=False)
+    print(f"\nResults saved to: {csv_path}")
+    
+    # Create visualization
+    print("\nCreating visualization...")
+    create_visualization(results, args)
+    
+    print("\nBenchmark complete!")
 
 
 if __name__ == "__main__":
-    # Parse arguments
-    args = build_argparser()
-    
-    # Set random seed for reproducibility
-    set_seed(args.seed)
-    
-    print("=" * 60)
-    print("GraphSSM Time Series Forecasting")
-    print("=" * 60)
-    print(f"Mode: {args.mode.upper()}")
-    print(f"Dataset: {args.data}")
-    print(f"Data path: {os.path.join(args.root_path, args.data_path)}")
-    print(f"Sequence length: {args.seq_len}, Prediction length: {args.pred_len}")
-    print(f"Model: {args.model}")
-    print(f"Distance formula: {args.distance}")  # NEW
-    print("=" * 60)
-    
-    # Check if data file exists
-    data_file_path = os.path.join(args.root_path, args.data_path)
-    if not os.path.exists(data_file_path):
-        print(f"ERROR: Data file not found at {data_file_path}")
-        print("Please download the ETT dataset and place it in the correct location.")
-        exit(1)
-    
-    # Device selection
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    
-    # Prepare dataset using MambaTS
-    dataset, data_loader = data_provider(
-        dataset_name=args.data,
-        root_path=args.root_path,
-        data_path=args.data_path,
-        flag="test",
-        size=[args.seq_len, args.pred_len],
-        features=args.features,
-        target=args.target,
-        inverse=args.inverse,
-        timeenc=args.timeenc,
-        freq=args.freq,
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=False,
-    )
-    
-    # Hard-coded list of distance formulas to test
-    distance_metrics_to_test = ["cosine", "euclidean", "manhattan", "gaussian", "norm2"]
-    
-    # Store results for plotting
-    results = []
-
-    for distance in distance_metrics_to_test:
-        print(f"\nEvaluating distance metric: {distance.upper()}")
-        
-        # Load model with the current distance metric
-        args.distance = distance
-        model = load_pretrained_model(args.model_path, args, device)
-        
-        tflops_calculator = TFLOPSCalculator()
-        
-        # Warmup
-        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(data_loader):
-            if i >= args.warmup_batches:
-                break
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            batch_x_mark, batch_y_mark = batch_x_mark.to(device), batch_y_mark.to(device)
-            with torch.no_grad():
-                _ = model(batch_x, batch_x_mark, batch_y, batch_y_mark)
-        
-        # Timed inference
-        total_flops = 0
-        total_time = 0
-        batch_count = 0
-        for batch_x, batch_y, batch_x_mark, batch_y_mark in data_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-            batch_x_mark, batch_y_mark = batch_x_mark.to(device), batch_y_mark.to(device)
-            b, seq_len, enc_in = batch_x.shape
-            
-            # Count FLOPs for this batch
-            flops = count_model_flops(model, batch_x.shape, args)
-            tflops_calculator.add_flops(flops)
-            
-            tflops_calculator.start_timing()
-            with torch.no_grad():
-                _ = model(batch_x, batch_x_mark, batch_y, batch_y_mark)
-            batch_time = tflops_calculator.end_timing()
-            
-            total_flops += flops
-            total_time += batch_time
-            batch_count += 1
-        
-        avg_batch_time = total_time / batch_count if batch_count > 0 else 0
-        tflops = tflops_calculator.calculate_tflops()
-        
-        results.append({
-            "distance": distance,
-            "avg_batch_time": avg_batch_time,
-            "tflops": tflops
-        })
-        
-        print(f"Average batch time: {avg_batch_time:.4f} s, TFLOPS: {tflops:.4f}")
-    
-    # Generate bar chart
-    distance_labels = [r["distance"] for r in results]
-    avg_times = [r["avg_batch_time"] for r in results]
-    tflops_vals = [r["tflops"] for r in results]
-
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-
-    color = 'tab:blue'
-    ax1.set_xlabel('Distance Metric')
-    ax1.set_ylabel('Avg Batch Time (s)', color=color)
-    ax1.bar(distance_labels, avg_times, color=color, alpha=0.6, label='Avg Batch Time')
-    ax1.tick_params(axis='y', labelcolor=color)
-
-    ax2 = ax1.twinx()
-    color = 'tab:red'
-    ax2.set_ylabel('TFLOPS', color=color)
-    ax2.plot(distance_labels, tflops_vals, color=color, marker='o', linewidth=2, label='TFLOPS')
-    ax2.tick_params(axis='y', labelcolor=color)
-
-    fig.tight_layout()
-    plt.title('GraphSSM Inference Performance Across Distance Metrics')
-    ax1.legend(loc='upper left')
-    ax2.legend(loc='upper right')
-    plt.show()
+    main()
