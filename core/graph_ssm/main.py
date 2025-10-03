@@ -95,6 +95,96 @@ def batch_index_opr(data, index):
     return data
 
 
+def find_leaf_nodes(tree):
+    """
+    Find leaf nodes in the tree structure.
+    
+    Args:
+        tree: Tensor [batch, num_edges, 2] where each edge is [source, target]
+    
+    Returns:
+        leaf_nodes_batch: List of leaf node indices for each batch
+        leaf_edges_batch: List of edge indices connecting to leaf nodes
+    """
+    batch_size, num_edges, _ = tree.shape
+    num_nodes = num_edges + 1  # Tree property: N nodes, N-1 edges
+    
+    leaf_nodes_batch = []
+    leaf_edges_batch = []
+    
+    for b in range(batch_size):
+        # Count degree of each node
+        degree = torch.zeros(num_nodes, dtype=torch.int32, device=tree.device)
+        
+        for edge_idx in range(num_edges):
+            src = tree[b, edge_idx, 0].item()
+            dst = tree[b, edge_idx, 1].item()
+            degree[src] += 1
+            degree[dst] += 1
+        
+        # Leaf nodes have degree 1
+        leaf_nodes = torch.where(degree == 1)[0].tolist()
+        
+        # Find edges connected to leaf nodes
+        leaf_edges = []
+        for edge_idx in range(num_edges):
+            src = tree[b, edge_idx, 0].item()
+            dst = tree[b, edge_idx, 1].item()
+            if src in leaf_nodes or dst in leaf_nodes:
+                leaf_edges.append(edge_idx)
+        
+        leaf_nodes_batch.append(leaf_nodes)
+        leaf_edges_batch.append(leaf_edges)
+    
+    return leaf_nodes_batch, leaf_edges_batch
+
+
+def prune_leaf_nodes(tree, num_leaves_to_prune=1):
+    """
+    Remove leaf nodes from the tree to reduce its size.
+    
+    Args:
+        tree: Tensor [batch, num_edges, 2]
+        num_leaves_to_prune: Number of leaf nodes to remove (default: 1)
+    
+    Returns:
+        pruned_tree: Tree with leaf nodes removed
+        num_removed: Number of edges actually removed per batch
+    """
+    pruned_tree = tree.clone()
+    batch_size = tree.shape[0]
+    num_removed_per_batch = []
+    
+    for b in range(batch_size):
+        removed_count = 0
+        
+        for _ in range(num_leaves_to_prune):
+            # Find current leaf nodes (recalculate after each removal)
+            leaf_nodes, leaf_edges = find_leaf_nodes(pruned_tree[b:b+1])
+            
+            if len(leaf_nodes[0]) == 0:
+                break  # No more leaves to remove
+            
+            # Remove the first leaf node found
+            leaf_to_remove = leaf_nodes[0][0]
+            
+            # Find and mark the edge as removed
+            num_edges = tree.shape[1]
+            for edge_idx in range(num_edges):
+                src = pruned_tree[b, edge_idx, 0].item()
+                dst = pruned_tree[b, edge_idx, 1].item()
+                
+                if src == leaf_to_remove or dst == leaf_to_remove:
+                    pruned_tree[b, edge_idx, 0] = -1
+                    pruned_tree[b, edge_idx, 1] = -1
+                    removed_count += 1
+                    break
+        
+        num_removed_per_batch.append(removed_count)
+    
+    return pruned_tree, num_removed_per_batch
+
+
 def tree_scanning_algorithm(self, input_states, context_len):
     batch_size, seq_len, _ = input_states.shape
     dtype = input_states.dtype
@@ -179,7 +269,17 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # MODIFIED: Use the distance function stored in self
             tree_weight = self.distance_fn(data1, data2)
 
+            
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
+            
+            print("Tree before pruning:")
+            print(tree)
+            # Prune leaf nodes from the tree
+            tree, num_removed = prune_leaf_nodes(tree, num_leaves_to_prune=1)
+            print(f"Pruned {num_removed} edges from tree")
+            print("Tree after pruning:")
+            print(tree)
+            
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
         else:
             sorted_index2, sorted_parent2, sorted_child2 = (
