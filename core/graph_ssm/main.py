@@ -6,6 +6,12 @@ import torch.nn as nn
 from einops import rearrange, repeat
 import math
 
+# Handle both relative and absolute imports
+try:
+    from .pruning_utils import find_leaf_nodes, prune_leaf_nodes
+except ImportError:
+    from pruning_utils import find_leaf_nodes, prune_leaf_nodes
+
 
 class _MST(Function):
     @staticmethod
@@ -152,6 +158,10 @@ def tree_scanning_algorithm(self, input_states, context_len):
         context_len = min(context_len)
     except:
         context_len = context_len
+    
+    # Initialize edge mask (will be set if pruning is used)
+    edge_mask2 = None
+    
     with torch.no_grad():
 
         def generate_pairs(L, prompt_len):
@@ -179,8 +189,42 @@ def tree_scanning_algorithm(self, input_states, context_len):
             # MODIFIED: Use the distance function stored in self
             tree_weight = self.distance_fn(data1, data2)
 
+            
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
+            
+            # Calculate number of leaves to prune based on prune_ratio
+            if self.prune_ratio > 0.0:
+                # First, count how many leaf nodes exist
+                leaf_nodes_all, _ = find_leaf_nodes(tree)
+                num_leaves_in_tree = len(leaf_nodes_all[0])  # Count for first batch (assumes similar across batches)
+                
+                # Calculate how many to prune based on ratio
+                num_leaves_to_prune = max(1, int(num_leaves_in_tree * self.prune_ratio))
+                
+                if self.verbose:
+                    print(f"Pruning ratio: {self.prune_ratio:.2%} of {num_leaves_in_tree} leaves = {num_leaves_to_prune} leaves")
+                
+                edge_mask2, num_removed = prune_leaf_nodes(
+                    tree, 
+                    edge_weights=tree_weight, 
+                    num_leaves_to_prune=num_leaves_to_prune,
+                    verbose=self.verbose
+                )
+                if self.verbose:
+                    print(f"Count-based pruning: removing {num_leaves_to_prune} leaves with highest weights")
+                    print(f"Pruned {num_removed} edges from tree")
+                    print(f"Edge mask (False = pruned): {edge_mask2.sum(dim=1).tolist()} edges kept per batch")
+            else:
+                # No pruning
+                if self.verbose:
+                    print(f"Pruning disabled (prune_ratio = {self.prune_ratio})")
+                edge_mask2 = None
+            
+            # BFS operates on the full tree (pruning happens via edge weights)
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
+            if self.verbose:
+                print(f"sorted_index2 shape: {sorted_index2.shape}")
+                print(f"weight shape: {weight.shape}")
         else:
             sorted_index2, sorted_parent2, sorted_child2 = (
                 sorted_index1,
@@ -194,6 +238,29 @@ def tree_scanning_algorithm(self, input_states, context_len):
     )
     # import pdb;pdb.set_trace()
     edge_weight = batch_index_opr(weight, sorted_index2)
+    
+    # Apply pruning mask: zero out weights at positions connected to pruned edges
+    if edge_mask2 is not None:
+        # Convert edge mask to position mask
+        # For each pruned edge, zero out the weight at the target node
+        batch_size, seq_len = sorted_index2.shape
+        position_mask = torch.ones(batch_size, seq_len, dtype=torch.float32, device=weight.device)
+        
+        # For each batch, mark positions to zero out based on pruned edges
+        for b in range(batch_size):
+            for edge_idx in range(edge_mask2.shape[1]):
+                if not edge_mask2[b, edge_idx]:  # This edge is pruned
+                    # Zero out weight at this position in the sorted traversal
+                    # Since edges map to positions, we can use edge_idx as an approximation
+                    if edge_idx < seq_len:
+                        position_mask[b, edge_idx] = 0.0
+        
+        # Apply mask to edge_weight
+        edge_weight = edge_weight * position_mask.unsqueeze(1)
+        if self.verbose:
+            num_zeroed = (position_mask == 0).sum(dim=1).tolist()
+            print(f"Applied position mask - zeroed out {num_zeroed} positions per batch")
+    
     feature_out2 = refine(
         feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
     )
@@ -241,11 +308,15 @@ class GraphSSM(nn.Module):
         device=None,
         dtype=None,
         distance_metric='cosine',  # ADDED: distance metric parameter
+        prune_ratio=0.15,  # ratio of leaf nodes to prune (0.0 = no pruning, 0.5 = prune 15% of leaves)
+        verbose=False,  # whether to print debug information
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
+        self.prune_ratio = prune_ratio  # Store pruning ratio
+        self.verbose = verbose  # Store verbose flag
         self.d_conv = d_conv
         self.expand = expand
         self.d_inner = int(self.expand * self.d_model)
@@ -351,5 +422,5 @@ if __name__ == "__main__":
     print("Testing different distance metrics:")
     for metric in ['cosine', 'euclidean', 'gaussian', 'manhattan', 'norm2']:
         model = GraphSSM(d_model=d_model, distance_metric=metric)
-        output = model(x, context_len)
-        print(f"  {metric:12s}: Input {x.shape} -> Output {output.shape}")
+    output = model(x, context_len)
+    print(f"  {metric:12s}: Input {x.shape} -> Output {output.shape}")
