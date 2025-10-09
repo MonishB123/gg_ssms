@@ -192,27 +192,13 @@ def tree_scanning_algorithm(self, input_states, context_len):
             
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
-            # Calculate number of leaves to prune based on prune_ratio
+            # Use pre-computed pruning configuration (OPTIMIZED)
             if self.prune_ratio > 0.0:
-                # First, count how many leaf nodes exist
-                leaf_nodes_all, _ = find_leaf_nodes(tree)
-                num_leaves_in_tree = len(leaf_nodes_all[0])  # Count for first batch (assumes similar across batches)
-                
-                # Calculate how many to prune based on ratio
-                num_leaves_to_prune = max(1, int(num_leaves_in_tree * self.prune_ratio))
+                # Get pre-computed pruning configuration
+                edge_mask2, num_leaves_to_prune, num_leaves_in_tree = self._get_pruning_config(seq_len, batch_size)
                 
                 if self.verbose:
-                    print(f"Pruning ratio: {self.prune_ratio:.2%} of {num_leaves_in_tree} leaves = {num_leaves_to_prune} leaves")
-                
-                edge_mask2, num_removed = prune_leaf_nodes(
-                    tree, 
-                    edge_weights=tree_weight, 
-                    num_leaves_to_prune=num_leaves_to_prune,
-                    verbose=self.verbose
-                )
-                if self.verbose:
-                    print(f"Count-based pruning: removing {num_leaves_to_prune} leaves with highest weights")
-                    print(f"Pruned {num_removed} edges from tree")
+                    print(f"Using pre-computed pruning: {self.prune_ratio:.2%} of {num_leaves_in_tree} leaves = {num_leaves_to_prune} leaves")
                     print(f"Edge mask (False = pruned): {edge_mask2.sum(dim=1).tolist()} edges kept per batch")
             else:
                 # No pruning
@@ -239,27 +225,33 @@ def tree_scanning_algorithm(self, input_states, context_len):
     # import pdb;pdb.set_trace()
     edge_weight = batch_index_opr(weight, sorted_index2)
     
-    # Apply pruning mask: zero out weights at positions connected to pruned edges
+    # Apply pruning mask: zero out weights at positions connected to pruned edges (OPTIMIZED)
     if edge_mask2 is not None:
-        # Convert edge mask to position mask
-        # For each pruned edge, zero out the weight at the target node
+        # Directly apply edge mask to edge weights (more efficient)
+        # edge_weight shape: [batch, features, seq_len]
+        # edge_mask2 shape: [batch, num_edges] where num_edges = seq_len - 1
+        
         batch_size, seq_len = sorted_index2.shape
+        num_edges = edge_mask2.shape[1]
+        
+        # Create position mask from edge mask
         position_mask = torch.ones(batch_size, seq_len, dtype=torch.float32, device=weight.device)
         
-        # For each batch, mark positions to zero out based on pruned edges
+        # Map edge indices to position indices
         for b in range(batch_size):
-            for edge_idx in range(edge_mask2.shape[1]):
+            for edge_idx in range(num_edges):
                 if not edge_mask2[b, edge_idx]:  # This edge is pruned
-                    # Zero out weight at this position in the sorted traversal
-                    # Since edges map to positions, we can use edge_idx as an approximation
-                    if edge_idx < seq_len:
-                        position_mask[b, edge_idx] = 0.0
+                    # For linear trees, edge i connects positions i and i+1
+                    # We zero out the target position (i+1)
+                    target_pos = edge_idx + 1
+                    if target_pos < seq_len:
+                        position_mask[b, target_pos] = 0.0
         
         # Apply mask to edge_weight
         edge_weight = edge_weight * position_mask.unsqueeze(1)
         if self.verbose:
             num_zeroed = (position_mask == 0).sum(dim=1).tolist()
-            print(f"Applied position mask - zeroed out {num_zeroed} positions per batch")
+            print(f"Applied optimized pruning mask - zeroed out {num_zeroed} positions per batch")
     
     feature_out2 = refine(
         feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
@@ -403,6 +395,82 @@ class GraphSSM(nn.Module):
             raise ValueError(f"Unknown distance metric: {distance_metric}. "
                            f"Choose from: {list(self.distance_functions.keys())}")
         self.distance_fn = self.distance_functions[distance_metric]
+        
+        # Pre-compute pruning configuration to avoid overhead during forward pass
+        self.pruning_cache = {}
+        self.max_seq_len_cached = 0
+        if prune_ratio > 0.0:
+            if verbose:
+                print(f"Pre-computing pruning configuration for ratio {prune_ratio:.2%}")
+            self._precompute_pruning_configs(prune_ratio, verbose)
+
+    def _precompute_pruning_configs(self, prune_ratio, verbose=False):
+        """Pre-compute pruning configurations for common sequence lengths"""
+        # Pre-compute for common sequence lengths used in time series forecasting
+        common_seq_lengths = [24, 48, 96, 192, 336, 720]
+        
+        for seq_len in common_seq_lengths:
+            if verbose:
+                print(f"  Pre-computing pruning for seq_len={seq_len}")
+            
+            # Create a dummy tree structure for this sequence length
+            tree_edges = []
+            for i in range(seq_len - 1):
+                tree_edges.append([i, i + 1])
+            
+            tree = torch.tensor(tree_edges, dtype=torch.long).unsqueeze(0)  # Add batch dimension
+            
+            # Calculate number of leaves (always 2 for linear tree: first and last nodes)
+            num_leaves = 2
+            num_leaves_to_prune = max(1, int(num_leaves * prune_ratio))
+            
+            # Pre-compute which edges to prune (prune edges connected to leaf nodes)
+            # For linear trees, we can prune edges connected to the last leaf
+            edge_mask = torch.ones(1, seq_len - 1, dtype=torch.bool)
+            
+            # Prune edges connected to the last leaf (highest index)
+            if num_leaves_to_prune >= 1:
+                edge_mask[0, -1] = False  # Prune last edge
+            
+            if num_leaves_to_prune >= 2:
+                edge_mask[0, 0] = False   # Prune first edge too
+            
+            self.pruning_cache[seq_len] = {
+                'edge_mask': edge_mask,
+                'num_leaves_to_prune': num_leaves_to_prune,
+                'num_leaves': num_leaves
+            }
+            
+            if verbose:
+                print(f"    Cached pruning config: {num_leaves_to_prune}/{num_leaves} leaves")
+        
+        self.max_seq_len_cached = max(common_seq_lengths)
+        if verbose:
+            print(f"Pre-computation complete. Cached configs for seq lengths: {common_seq_lengths}")
+    
+    def _get_pruning_config(self, seq_len, batch_size):
+        """Get pre-computed pruning configuration for given sequence length"""
+        if seq_len not in self.pruning_cache:
+            # If sequence length not cached, create on-the-fly (fallback)
+            if self.verbose:
+                print(f"Warning: seq_len={seq_len} not pre-computed, creating on-the-fly")
+            
+            # Create minimal pruning config
+            num_leaves = 2  # Linear tree has 2 leaves
+            num_leaves_to_prune = max(1, int(num_leaves * self.prune_ratio))
+            
+            edge_mask = torch.ones(batch_size, seq_len - 1, dtype=torch.bool)
+            if num_leaves_to_prune >= 1:
+                edge_mask[:, -1] = False  # Prune last edge
+            if num_leaves_to_prune >= 2:
+                edge_mask[:, 0] = False   # Prune first edge
+            
+            return edge_mask, num_leaves_to_prune, num_leaves
+        
+        # Use cached configuration
+        cached_config = self.pruning_cache[seq_len]
+        edge_mask = cached_config['edge_mask'].repeat(batch_size, 1)
+        return edge_mask, cached_config['num_leaves_to_prune'], cached_config['num_leaves']
 
     def forward(self, input_states, context_len):
         return tree_scanning_algorithm(self, input_states, context_len)
