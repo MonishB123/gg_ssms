@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import random
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -154,7 +155,10 @@ class GraphSSMTrainer:
         return data_set, data_loader
     
     def _select_optimizer(self):
-        model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
+        if self.args.optimizer.lower() == "adamw":
+            model_optim = optim.AdamW(self.model.parameters(), lr=self.args.learning_rate, weight_decay=self.args.weight_decay)
+        else:
+            model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
         return model_optim
     
     def _select_criterion(self):
@@ -374,9 +378,9 @@ def build_argparser():
     parser.add_argument("--visualization", type=str, default="./test_results", help="location of model checkpoints")
     
     # Forecasting task
-    parser.add_argument("--seq_len", type=int, default=48, help="input sequence length")
-    parser.add_argument("--label_len", type=int, default=24, help="start token length")
-    parser.add_argument("--pred_len", type=int, default=24, help="prediction sequence length")
+    parser.add_argument("--seq_len", type=int, default=96, help="input sequence length")
+    parser.add_argument("--label_len", type=int, default=48, help="start token length")
+    parser.add_argument("--pred_len", type=int, default=96, help="prediction sequence length")
     parser.add_argument("--seasonal_patterns", type=str, default="Monthly", help="subset for M4")
     parser.add_argument("--inverse", action="store_true", help="inverse output data", default=False)
     
@@ -393,15 +397,16 @@ def build_argparser():
     # Optimization
     parser.add_argument("--num_workers", type=int, default=0, help="data loader num workers")
     parser.add_argument("--itr", type=int, default=1, help="experiments times")
-    parser.add_argument("--train_epochs", type=int, default=10, help="train epochs")
+    parser.add_argument("--train_epochs", type=int, default=200, help="train epochs")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size of train input data")
     parser.add_argument("--patience", type=int, default=3, help="early stopping patience")
-    parser.add_argument("--learning_rate", type=float, default=0.0001, help="optimizer learning rate")
+    parser.add_argument("--learning_rate", type=float, default=0.001, help="optimizer learning rate")
     parser.add_argument("--des", type=str, default="Exp", help="exp description")
     parser.add_argument("--loss", type=str, default="MSE", help="loss function")
-    parser.add_argument("--lradj", type=str, default="type1", help="adjust learning rate")
+    parser.add_argument("--lradj", type=str, default="cosine", help="adjust learning rate")
     parser.add_argument("--use_amp", action="store_true", help="use automatic mixed precision training", default=False)
-    parser.add_argument("--optimizer", type=str, default="adam", help="optimizer")
+    parser.add_argument("--optimizer", type=str, default="adamw", help="optimizer")
+    parser.add_argument("--weight_decay", type=float, default=0.05, help="weight decay for AdamW optimizer")
     
     # GPU
     parser.add_argument("--use_gpu", type=bool, default=True, help="use gpu")
@@ -442,9 +447,9 @@ def train_dataset(args, dataset_name, dataset_config):
         args.enc_in = 137
         args.dec_in = 137
         args.c_out = 137
-        args.seq_len = 48
-        args.label_len = 24
-        args.pred_len = 24
+        args.seq_len = 96
+        args.label_len = 48
+        args.pred_len = 96
         args.features = "M"
         args.d_model = 32
         print(f"Solar dataset: {args.root_path}/{args.data_path}")
@@ -494,12 +499,12 @@ def main():
             "enc_in": 7,
             "dec_in": 7,
             "c_out": 7,
-            "seq_len": 48,
-            "label_len": 24,
-            "pred_len": 24,
+            "seq_len": 96,
+            "label_len": 48,
+            "pred_len": 96,
             "d_model": 512,
             "batch_size": 32,
-            "learning_rate": 0.0001,
+            "learning_rate": 0.001,
         },
         "ETTh1": {
             "data": "ETTh1",
@@ -508,12 +513,12 @@ def main():
             "enc_in": 7,
             "dec_in": 7,
             "c_out": 7,
-            "seq_len": 48,
-            "label_len": 24,
-            "pred_len": 24,
+            "seq_len": 96,
+            "label_len": 48,
+            "pred_len": 96,
             "d_model": 512,
             "batch_size": 32,
-            "learning_rate": 0.0001,
+            "learning_rate": 0.001,
         },
         "Solar": {
             "use_solar": True,
@@ -522,12 +527,12 @@ def main():
             "enc_in": 137,
             "dec_in": 137,
             "c_out": 137,
-            "seq_len": 48,
-            "label_len": 24,
-            "pred_len": 24,
+            "seq_len": 96,
+            "label_len": 48,
+            "pred_len": 96,
             "d_model": 32,
             "batch_size": 16,
-            "learning_rate": 0.0005,
+            "learning_rate": 0.001,
         }
     }
     
