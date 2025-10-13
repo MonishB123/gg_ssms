@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from typing import Tuple, Dict, Any
+from tqdm import tqdm
 
 # Add MambaTS to path
 gg_ssms_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "workspace")
@@ -227,7 +228,11 @@ class GraphSSMTrainer:
             self.model.train()
             epoch_time = time.time()
             
-            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_loader):
+            # Create progress bar for training batches
+            train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.args.train_epochs}", 
+                            leave=False, disable=not self.args.verbose)
+            
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in enumerate(train_pbar):
                 iter_count += 1
                 model_optim.zero_grad()
                 
@@ -256,6 +261,9 @@ class GraphSSMTrainer:
                     batch_y = batch_y[:, -self.args.pred_len:, f_dim:].to(self.device)
                     loss = criterion(outputs, batch_y)
                     train_loss.append(loss.item())
+                
+                # Update progress bar with loss information
+                train_pbar.set_postfix({'loss': f'{loss.item():.6f}'})
                 
                 if (i + 1) % 100 == 0:
                     print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
@@ -425,6 +433,9 @@ def build_argparser():
     parser.add_argument("--solar_root_path", type=str, default="/data/eval_pipelines/datasets", help="Root path for Solar dataset")
     parser.add_argument("--solar_data_path", type=str, default="solar_AL.txt", help="Solar dataset file name")
     
+    # Progress tracking
+    parser.add_argument("--verbose", action="store_true", help="Show detailed progress bars", default=True)
+    
     return parser.parse_args()
 
 
@@ -536,14 +547,23 @@ def main():
         }
     }
     
-    # Train all datasets
+    # Train all datasets with progress tracking
     trained_models = {}
-    for dataset_name, config in datasets.items():
+    dataset_names = list(datasets.keys())
+    
+    # Create overall progress bar for datasets
+    dataset_pbar = tqdm(dataset_names, desc="Training Datasets", 
+                       bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]')
+    
+    for dataset_name in dataset_pbar:
+        dataset_pbar.set_description(f"Training {dataset_name}")
         try:
-            setting = train_dataset(args, dataset_name, config)
+            setting = train_dataset(args, dataset_name, datasets[dataset_name])
             trained_models[dataset_name] = setting
+            dataset_pbar.set_postfix({'status': '✓ Completed'})
         except Exception as e:
             print(f"Error training {dataset_name}: {e}")
+            dataset_pbar.set_postfix({'status': '✗ Failed'})
             continue
     
     # Summary
@@ -559,4 +579,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
