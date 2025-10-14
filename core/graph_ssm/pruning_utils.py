@@ -3,58 +3,56 @@ Pruning utilities for tree-based structures.
 
 This module provides functions for identifying and pruning leaf nodes in tree structures,
 useful for Graph SSM models that build and traverse tree structures.
+
+OPTIMIZED VERSION: Fully vectorized operations using CUDA-accelerated tensor operations.
 """
 
 import torch
 
 
-def find_leaf_nodes(tree):
+def find_leaf_nodes_vectorized(tree):
     """
-    Find leaf nodes in the tree structure.
+    Find leaf nodes in the tree structure using fully vectorized operations.
     
     Args:
         tree: Tensor [batch, num_edges, 2] where each edge is [source, target]
     
     Returns:
-        leaf_nodes_batch: List of leaf node indices for each batch
-        leaf_edges_batch: List of edge indices connecting to leaf nodes
+        leaf_nodes_mask: Boolean tensor [batch, num_nodes] where True = leaf node
+        leaf_edges_mask: Boolean tensor [batch, num_edges] where True = edge connected to leaf
     """
     batch_size, num_edges, _ = tree.shape
     num_nodes = num_edges + 1  # Tree property: N nodes, N-1 edges
+    device = tree.device
     
-    leaf_nodes_batch = []
-    leaf_edges_batch = []
+    # Vectorized degree calculation
+    # Create edge indices for scatter operations
+    src_nodes = tree[:, :, 0]  # [batch, num_edges]
+    dst_nodes = tree[:, :, 1]  # [batch, num_edges]
     
-    for b in range(batch_size):
-        # Count degree of each node
-        degree = torch.zeros(num_nodes, dtype=torch.int32, device=tree.device)
-        
-        for edge_idx in range(num_edges):
-            src = tree[b, edge_idx, 0].item()
-            dst = tree[b, edge_idx, 1].item()
-            degree[src] += 1
-            degree[dst] += 1
-        
-        # Leaf nodes have degree 1
-        leaf_nodes = torch.where(degree == 1)[0].tolist()
-        
-        # Find edges connected to leaf nodes
-        leaf_edges = []
-        for edge_idx in range(num_edges):
-            src = tree[b, edge_idx, 0].item()
-            dst = tree[b, edge_idx, 1].item()
-            if src in leaf_nodes or dst in leaf_nodes:
-                leaf_edges.append(edge_idx)
-        
-        leaf_nodes_batch.append(leaf_nodes)
-        leaf_edges_batch.append(leaf_edges)
+    # Use scatter_add to count degrees efficiently
+    # Initialize degree tensor
+    degree = torch.zeros(batch_size, num_nodes, dtype=torch.int32, device=device)
     
-    return leaf_nodes_batch, leaf_edges_batch
+    # Count degrees using scatter_add (CUDA-accelerated)
+    degree.scatter_add_(1, src_nodes, torch.ones_like(src_nodes, dtype=torch.int32))
+    degree.scatter_add_(1, dst_nodes, torch.ones_like(dst_nodes, dtype=torch.int32))
+    
+    # Leaf nodes have degree 1
+    leaf_nodes_mask = (degree == 1)  # [batch, num_nodes]
+    
+    # Find edges connected to leaf nodes (vectorized)
+    # Check if either source or destination is a leaf
+    src_is_leaf = leaf_nodes_mask.gather(1, src_nodes)  # [batch, num_edges]
+    dst_is_leaf = leaf_nodes_mask.gather(1, dst_nodes)   # [batch, num_edges]
+    leaf_edges_mask = src_is_leaf | dst_is_leaf  # [batch, num_edges]
+    
+    return leaf_nodes_mask, leaf_edges_mask
 
 
-def prune_leaf_nodes(tree, edge_weights=None, num_leaves_to_prune=1, verbose=False):
+def prune_leaf_nodes_vectorized(tree, edge_weights=None, num_leaves_to_prune=1, verbose=False):
     """
-    Create a mask for edges to prune based on leaf nodes.
+    Create a mask for edges to prune based on leaf nodes using fully vectorized operations.
     
     Prunes N leaf nodes with the HIGHEST edge weights (strongest connections).
     
@@ -69,66 +67,110 @@ def prune_leaf_nodes(tree, edge_weights=None, num_leaves_to_prune=1, verbose=Fal
         num_removed: Number of edges marked for removal per batch
     """
     batch_size, num_edges, _ = tree.shape
-    edge_mask = torch.ones(batch_size, num_edges, dtype=torch.bool, device=tree.device)
-    num_removed_per_batch = []
+    device = tree.device
     
-    for b in range(batch_size):
-        # Find all leaf nodes
-        leaf_nodes, leaf_edges = find_leaf_nodes(tree[b:b+1])
+    # Initialize edge mask (all edges kept by default)
+    edge_mask = torch.ones(batch_size, num_edges, dtype=torch.bool, device=device)
+    
+    if num_leaves_to_prune <= 0:
+        return edge_mask, torch.zeros(batch_size, dtype=torch.int32, device=device)
+    
+    # Find leaf nodes and leaf edges using vectorized operations
+    leaf_nodes_mask, leaf_edges_mask = find_leaf_nodes_vectorized(tree)
+    
+    # Count leaf edges per batch
+    num_leaf_edges_per_batch = leaf_edges_mask.sum(dim=1)  # [batch]
+    
+    # Handle batches with no leaf edges
+    valid_batches = num_leaf_edges_per_batch > 0
+    
+    if not valid_batches.any():
+        return edge_mask, torch.zeros(batch_size, dtype=torch.int32, device=device)
+    
+    # For batches with leaf edges, perform pruning
+    if edge_weights is not None:
+        # Use provided edge weights
+        pruning_weights = edge_weights.clone()
+    else:
+        # Use uniform weights if not provided
+        pruning_weights = torch.ones_like(leaf_edges_mask, dtype=torch.float32)
+    
+    # Mask weights to only consider leaf edges
+    leaf_weights = pruning_weights * leaf_edges_mask.float()
+    
+    # Set non-leaf edge weights to -inf so they won't be selected
+    leaf_weights = torch.where(leaf_edges_mask, leaf_weights, torch.tensor(float('-inf'), device=device))
+    
+    # Find top-k leaf edges to prune (vectorized across batches)
+    # We need to handle variable number of leaf edges per batch
+    max_leaf_edges = num_leaf_edges_per_batch.max().item()
+    
+    if max_leaf_edges > 0:
+        # Get top-k leaf edges for pruning
+        _, top_indices = torch.topk(leaf_weights, min(num_leaves_to_prune, max_leaf_edges), dim=1)
         
-        if len(leaf_nodes[0]) == 0:
-            num_removed_per_batch.append(0)
-            continue
+        # Create pruning mask for top-k edges
+        prune_mask = torch.zeros_like(edge_mask)
+        batch_indices = torch.arange(batch_size, device=device).unsqueeze(1)
         
-        # Collect (leaf_node, edge_idx, weight) for all leaves
-        leaf_info = []
-        for leaf_node in leaf_nodes[0]:
-            # Find the edge connected to this leaf
-            for edge_idx in range(num_edges):
-                src = tree[b, edge_idx, 0].item()
-                dst = tree[b, edge_idx, 1].item()
-                
-                if src == leaf_node or dst == leaf_node:
-                    if edge_weights is not None:
-                        weight = edge_weights[b, edge_idx].item()
-                    else:
-                        weight = 0.0  # Default weight if not provided
-                    
-                    leaf_info.append({
-                        'leaf_node': leaf_node,
-                        'edge_idx': edge_idx,
-                        'weight': weight,
-                        'edge': (src, dst)
-                    })
-                    break
-        
-        # Sort leaves by weight (descending) - highest weights first
-        leaf_info.sort(key=lambda x: x['weight'], reverse=True)
-        
-        # Prune the N leaves with highest weights
-        num_to_prune = min(num_leaves_to_prune, len(leaf_info))
-        
-        if verbose and b == 0:  # Print debug info for batch 0
-            print(f"   Batch 0: Found {len(leaf_info)} leaf nodes")
-            print(f"   Pruning {num_to_prune} leaves with HIGHEST weights:")
-        
-        for i in range(num_to_prune):
-            info = leaf_info[i]
-            edge_mask[b, info['edge_idx']] = False
+        # Only prune if we have enough leaf edges
+        for k in range(min(num_leaves_to_prune, max_leaf_edges)):
+            # Get the k-th highest weight leaf edge for each batch
+            edge_indices = top_indices[:, k]  # [batch]
             
-            if verbose and b == 0:  # Print first few for batch 0
-                src, dst = info['edge']
-                print(f"   ✗ Pruning edge {info['edge_idx']}: {src}→{dst} (leaf={info['leaf_node']}, weight={info['weight']:.4f})")
+            # Only prune if this batch has enough leaf edges
+            valid_for_pruning = (num_leaf_edges_per_batch > k) & valid_batches
+            
+            if valid_for_pruning.any():
+                # Set mask to False (prune) for selected edges
+                prune_mask[batch_indices[valid_for_pruning], edge_indices[valid_for_pruning]] = False
         
-        if verbose and b == 0 and num_to_prune < len(leaf_info):
-            print(f"   Keeping {len(leaf_info) - num_to_prune} leaves with lower weights")
-            # Show a few kept leaves
-            for i in range(num_to_prune, min(num_to_prune + 3, len(leaf_info))):
-                info = leaf_info[i]
-                src, dst = info['edge']
-                print(f"   ✓ Keeping edge {info['edge_idx']}: {src}→{dst} (leaf={info['leaf_node']}, weight={info['weight']:.4f})")
-        
-        num_removed_per_batch.append(num_to_prune)
+        # Apply pruning mask
+        edge_mask = edge_mask & prune_mask
+    
+    # Calculate number of edges removed per batch
+    num_removed_per_batch = (leaf_edges_mask & ~edge_mask).sum(dim=1)
+    
+    if verbose:
+        # Print debug info (only for first batch to avoid spam)
+        if batch_size > 0:
+            print(f"   Batch 0: Found {num_leaf_edges_per_batch[0].item()} leaf edges")
+            print(f"   Pruned {num_removed_per_batch[0].item()} edges")
     
     return edge_mask, num_removed_per_batch
+
+
+# Backward compatibility - keep original functions but mark as deprecated
+def find_leaf_nodes(tree):
+    """
+    DEPRECATED: Use find_leaf_nodes_vectorized instead for better performance.
+    """
+    leaf_nodes_mask, leaf_edges_mask = find_leaf_nodes_vectorized(tree)
+    
+    # Convert to old format for backward compatibility
+    batch_size = tree.shape[0]
+    leaf_nodes_batch = []
+    leaf_edges_batch = []
+    
+    for b in range(batch_size):
+        leaf_nodes = torch.where(leaf_nodes_mask[b])[0].tolist()
+        leaf_edges = torch.where(leaf_edges_mask[b])[0].tolist()
+        leaf_nodes_batch.append(leaf_nodes)
+        leaf_edges_batch.append(leaf_edges)
+    
+    return leaf_nodes_batch, leaf_edges_batch
+
+
+def prune_leaf_nodes(tree, edge_weights=None, num_leaves_to_prune=1, verbose=False):
+    """
+    DEPRECATED: Use prune_leaf_nodes_vectorized instead for better performance.
+    """
+    edge_mask, num_removed_per_batch = prune_leaf_nodes_vectorized(
+        tree, edge_weights, num_leaves_to_prune, verbose
+    )
+    
+    # Convert to old format for backward compatibility
+    num_removed_list = num_removed_per_batch.tolist()
+    
+    return edge_mask, num_removed_list
 
