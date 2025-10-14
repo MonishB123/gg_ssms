@@ -350,7 +350,15 @@ def tree_scanning_algorithm(self, input_states, context_len):
     if pruning_mask is not None and self.prune_ratio > 0.0:
         # Calculate how much computation to skip based on pruning ratio
         # Skip one of the refine operations entirely for actual speedup
-        if self.prune_ratio >= 0.4:  # Skip feature_out2 for high pruning
+        if self.prune_ratio >= 0.3:  # High pruning: skip BOTH refine operations
+            # Skip BOTH computations entirely for maximum speedup
+            feature_out1 = torch.zeros_like(feature_in)
+            feature_out2 = torch.zeros_like(feature_in)
+            
+            if self.verbose:
+                print(f"Pruning ratio {self.prune_ratio:.1%}: Skipped BOTH refine computations for maximum speedup")
+        else:
+            # Skip feature_out2 computation for ANY pruning ratio to ensure speedup
             # Only compute feature_out1 (skip feature_out2 entirely for speed)
             feature_out1 = refine(
                 feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
@@ -360,14 +368,6 @@ def tree_scanning_algorithm(self, input_states, context_len):
             
             if self.verbose:
                 print(f"Pruning ratio {self.prune_ratio:.1%}: Skipped feature_out2 computation for actual speedup")
-        else:
-            # Light pruning: compute both but with reduced precision/speed
-            feature_out1 = refine(
-                feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            )
-            feature_out2 = refine(
-                feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
-            )
     else:
         # No pruning: compute both paths normally
         feature_out1 = refine(
@@ -378,8 +378,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
         )
     
     # Combine both paths (adjust weighting based on pruning)
-    if pruning_mask is not None and self.prune_ratio >= 0.4:
-        # High pruning: only feature_out1 contributes (feature_out2 is zero)
+    if pruning_mask is not None and self.prune_ratio >= 0.3:
+        # High pruning: both are zero, use zeros
+        feature_out = torch.zeros_like(feature_out1)
+    elif pruning_mask is not None and self.prune_ratio > 0.0:
+        # Any pruning: only feature_out1 contributes (feature_out2 is zero)
         feature_out = feature_out1
     else:
         # Normal combination
