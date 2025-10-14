@@ -41,7 +41,7 @@ python train_graphssm.py \
     --d_state 16 \
     --d_conv 4 \
     --expand 2 \
-    --prune_ratio 0.15 \
+    --prune_ratio 0.0 \
     --optimizer adamw \
     --weight_decay 0.05 \
     --learning_rate 0.001 \
