@@ -35,16 +35,18 @@ def find_leaf_nodes_vectorized(tree):
     degree = torch.zeros(batch_size, num_nodes, dtype=torch.int32, device=device)
     
     # Count degrees using scatter_add (CUDA-accelerated)
-    degree.scatter_add_(1, src_nodes, torch.ones_like(src_nodes, dtype=torch.int32))
-    degree.scatter_add_(1, dst_nodes, torch.ones_like(dst_nodes, dtype=torch.int32))
+    # Convert to int64 for scatter_add compatibility
+    degree.scatter_add_(1, src_nodes.long(), torch.ones_like(src_nodes, dtype=torch.int32))
+    degree.scatter_add_(1, dst_nodes.long(), torch.ones_like(dst_nodes, dtype=torch.int32))
     
     # Leaf nodes have degree 1
     leaf_nodes_mask = (degree == 1)  # [batch, num_nodes]
     
     # Find edges connected to leaf nodes (vectorized)
     # Check if either source or destination is a leaf
-    src_is_leaf = leaf_nodes_mask.gather(1, src_nodes)  # [batch, num_edges]
-    dst_is_leaf = leaf_nodes_mask.gather(1, dst_nodes)   # [batch, num_edges]
+    # Convert to int64 for gather compatibility
+    src_is_leaf = leaf_nodes_mask.gather(1, src_nodes.long())  # [batch, num_edges]
+    dst_is_leaf = leaf_nodes_mask.gather(1, dst_nodes.long())   # [batch, num_edges]
     leaf_edges_mask = src_is_leaf | dst_is_leaf  # [batch, num_edges]
     
     return leaf_nodes_mask, leaf_edges_mask
@@ -153,8 +155,8 @@ def find_leaf_nodes(tree):
     leaf_edges_batch = []
     
     for b in range(batch_size):
-        leaf_nodes = torch.where(leaf_nodes_mask[b])[0].tolist()
-        leaf_edges = torch.where(leaf_edges_mask[b])[0].tolist()
+        leaf_nodes = torch.where(leaf_nodes_mask[b])[0].cpu().tolist()
+        leaf_edges = torch.where(leaf_edges_mask[b])[0].cpu().tolist()
         leaf_nodes_batch.append(leaf_nodes)
         leaf_edges_batch.append(leaf_edges)
     
@@ -170,7 +172,7 @@ def prune_leaf_nodes(tree, edge_weights=None, num_leaves_to_prune=1, verbose=Fal
     )
     
     # Convert to old format for backward compatibility
-    num_removed_list = num_removed_per_batch.tolist()
+    num_removed_list = num_removed_per_batch.cpu().tolist()
     
     return edge_mask, num_removed_list
 
