@@ -150,6 +150,8 @@ def tree_scanning_algorithm(self, input_states, context_len):
     tree_indices = torch.arange(seq_len - 1, dtype=torch.int64, device=device)
     tree_ = torch.stack([tree_indices, tree_indices + 1], dim=1)  # [seq_len-1, 2]
     tree = tree_.unsqueeze(0).repeat(batch_size, 1, 1)  # [batch, seq_len-1, 2]
+    # Convert to int32 for CUDA kernel compatibility
+    tree = tree.int()
     sorted_index1, sorted_parent1, sorted_child1 = bfs(tree, 4)
 
     ### build tree by feature
@@ -199,6 +201,8 @@ def tree_scanning_algorithm(self, input_states, context_len):
 
         if context_len > 2:
             pairs = generate_pairs_vectorized(seq_len, context_len).to(device)
+            # Convert to int32 for CUDA kernel compatibility
+            pairs = pairs.int()
             data1 = torch.index_select(feature_in, 2, pairs[:, 0])
             data2 = torch.index_select(feature_in, 2, pairs[:, 1])
             

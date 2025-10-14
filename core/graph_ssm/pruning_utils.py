@@ -25,28 +25,31 @@ def find_leaf_nodes_vectorized(tree):
     num_nodes = num_edges + 1  # Tree property: N nodes, N-1 edges
     device = tree.device
     
+    # Convert to int64 for vectorized operations (tree comes in as int32 for CUDA kernels)
+    tree_long = tree.long()
+    
     # Vectorized degree calculation
     # Create edge indices for scatter operations
-    src_nodes = tree[:, :, 0]  # [batch, num_edges]
-    dst_nodes = tree[:, :, 1]  # [batch, num_edges]
+    src_nodes = tree_long[:, :, 0]  # [batch, num_edges]
+    dst_nodes = tree_long[:, :, 1]  # [batch, num_edges]
     
     # Use scatter_add to count degrees efficiently
     # Initialize degree tensor
     degree = torch.zeros(batch_size, num_nodes, dtype=torch.int32, device=device)
     
     # Count degrees using scatter_add (CUDA-accelerated)
-    # Convert to int64 for scatter_add compatibility
-    degree.scatter_add_(1, src_nodes.long(), torch.ones_like(src_nodes, dtype=torch.int32))
-    degree.scatter_add_(1, dst_nodes.long(), torch.ones_like(dst_nodes, dtype=torch.int32))
+    # src_nodes and dst_nodes are already int64 from tree_long
+    degree.scatter_add_(1, src_nodes, torch.ones_like(src_nodes, dtype=torch.int32))
+    degree.scatter_add_(1, dst_nodes, torch.ones_like(dst_nodes, dtype=torch.int32))
     
     # Leaf nodes have degree 1
     leaf_nodes_mask = (degree == 1)  # [batch, num_nodes]
     
     # Find edges connected to leaf nodes (vectorized)
     # Check if either source or destination is a leaf
-    # Convert to int64 for gather compatibility
-    src_is_leaf = leaf_nodes_mask.gather(1, src_nodes.long())  # [batch, num_edges]
-    dst_is_leaf = leaf_nodes_mask.gather(1, dst_nodes.long())   # [batch, num_edges]
+    # src_nodes and dst_nodes are already int64 from tree_long
+    src_is_leaf = leaf_nodes_mask.gather(1, src_nodes)  # [batch, num_edges]
+    dst_is_leaf = leaf_nodes_mask.gather(1, dst_nodes)   # [batch, num_edges]
     leaf_edges_mask = src_is_leaf | dst_is_leaf  # [batch, num_edges]
     
     return leaf_nodes_mask, leaf_edges_mask
