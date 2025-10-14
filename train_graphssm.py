@@ -445,9 +445,15 @@ def train_dataset(args, dataset_name, dataset_config):
     print(f"Training GraphSSM for {dataset_name}")
     print(f"{'='*60}")
     
+    # Store the original pred_len from command line
+    original_pred_len = args.pred_len
+    
     # Update args with dataset-specific configuration
     for key, value in dataset_config.items():
         setattr(args, key, value)
+    
+    # Restore the original pred_len from command line (override dataset config)
+    args.pred_len = original_pred_len
     
     # Configure Solar dataset if requested
     if args.use_solar:

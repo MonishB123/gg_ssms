@@ -39,19 +39,13 @@ for pred_len in "${PRED_LENGTHS[@]}"; do
     # Record start time for this prediction length
     START_TIME=$(date +%s)
     
-    # Run training for each dataset individually with this prediction length
+    # Run training for all datasets with this prediction length
     echo "📈 Training ETTm1, ETTh1, and Solar datasets..."
-    
-    # Train ETTm1
-    echo "  🎯 Training ETTm1 with pred_len=${pred_len}..."
     python train_graphssm.py \
         --task_name long_term_forecast \
         --is_training 1 \
         --model_id GraphSSM \
         --model GraphSSM \
-        --data ETTm1 \
-        --root_path "/data/eval_pipelines/datasets/ETT-small" \
-        --data_path "ETTm1.csv" \
         --train_epochs 5 \
         --patience 3 \
         --itr 1 \
@@ -70,78 +64,6 @@ for pred_len in "${PRED_LENGTHS[@]}"; do
         --learning_rate 0.001 \
         --seq_len 96 \
         --pred_len ${pred_len} \
-        --enc_in 7 \
-        --dec_in 7 \
-        --c_out 7 \
-        --d_model 512 \
-        --verbose
-    
-    # Train ETTh1
-    echo "  🎯 Training ETTh1 with pred_len=${pred_len}..."
-    python train_graphssm.py \
-        --task_name long_term_forecast \
-        --is_training 1 \
-        --model_id GraphSSM \
-        --model GraphSSM \
-        --data ETTh1 \
-        --root_path "/data/eval_pipelines/datasets/ETT-small" \
-        --data_path "ETTh1.csv" \
-        --train_epochs 5 \
-        --patience 3 \
-        --itr 1 \
-        --des 'GraphSSM_Exp' \
-        --loss MSE \
-        --lradj cosine \
-        --use_amp \
-        --use_gpu True \
-        --gpu 0 \
-        --d_state 16 \
-        --d_conv 4 \
-        --expand 2 \
-        --prune_ratio 0.0 \
-        --optimizer adamw \
-        --weight_decay 0.05 \
-        --learning_rate 0.001 \
-        --seq_len 96 \
-        --pred_len ${pred_len} \
-        --enc_in 7 \
-        --dec_in 7 \
-        --c_out 7 \
-        --d_model 512 \
-        --verbose
-    
-    # Train Solar
-    echo "  🎯 Training Solar with pred_len=${pred_len}..."
-    python train_graphssm.py \
-        --task_name long_term_forecast \
-        --is_training 1 \
-        --model_id GraphSSM \
-        --model GraphSSM \
-        --data Solar \
-        --root_path "/data/eval_pipelines/datasets" \
-        --data_path "solar_AL.txt" \
-        --train_epochs 5 \
-        --patience 3 \
-        --itr 1 \
-        --des 'GraphSSM_Exp' \
-        --loss MSE \
-        --lradj cosine \
-        --use_amp \
-        --use_gpu True \
-        --gpu 0 \
-        --d_state 16 \
-        --d_conv 4 \
-        --expand 2 \
-        --prune_ratio 0.0 \
-        --optimizer adamw \
-        --weight_decay 0.05 \
-        --learning_rate 0.001 \
-        --seq_len 96 \
-        --pred_len ${pred_len} \
-        --enc_in 137 \
-        --dec_in 137 \
-        --c_out 137 \
-        --d_model 32 \
         --verbose
     
     # Calculate training time for this prediction length
