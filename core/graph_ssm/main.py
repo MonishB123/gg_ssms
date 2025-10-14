@@ -214,14 +214,16 @@ def tree_scanning_algorithm(self, input_states, context_len):
             
             # Apply dynamic pruning based on actual MST tree structure (vectorized)
             if self.prune_ratio > 0.0:
-                # Calculate number of leaves to prune based on actual tree structure
-                # Use a more direct approach: calculate based on total edges
+                # Calculate number of edges to prune based on pruning ratio
+                # Use a percentage-based approach instead of leaf-based pruning
                 num_tree_edges = tree.shape[1]  # Actual number of edges in MST
-                # Estimate leaves as a fraction of total edges (MST trees have 2-4 leaves typically)
-                # Use a larger estimate to make pruning differences more pronounced
-                estimated_leaves = max(4, min(8, num_tree_edges // 12))  # Larger estimate for better differentiation
-                # Use a more sensitive calculation that preserves small differences
-                num_leaves_to_prune = max(1, int(estimated_leaves * self.prune_ratio + 0.5))  # Round to nearest integer
+                # Prune a percentage of total edges (not just leaves)
+                num_edges_to_prune = max(1, int(num_tree_edges * self.prune_ratio))
+                
+                # For leaf-based pruning, we need to find how many leaf edges exist
+                # and prune a proportional amount
+                estimated_leaves = max(2, min(4, num_tree_edges // 24))  # Conservative leaf estimate
+                num_leaves_to_prune = max(1, min(estimated_leaves, int(estimated_leaves * self.prune_ratio + 0.5)))
                 
                 # Fix tensor shape mismatch: Extract edge weights for actual tree edges
                 if tree_weight.shape[1] >= num_tree_edges:
@@ -230,15 +232,29 @@ def tree_scanning_algorithm(self, input_states, context_len):
                     # Handle case where MST has fewer edges than expected
                     edge_weights_for_pruning = torch.ones(batch_size, num_tree_edges, device=tree_weight.device)
                 
-                # Use vectorized pruning function
-                edge_mask2, num_removed_per_batch = prune_leaf_nodes_vectorized(
-                    tree, edge_weights_for_pruning, num_leaves_to_prune, verbose=self.verbose
-                )
+                # Use general edge pruning instead of leaf-only pruning
+                # This allows pruning any edges based on weights, not just leaves
+                edge_mask2 = torch.ones(batch_size, num_tree_edges, dtype=torch.bool, device=tree.device)
+                
+                # Prune edges with lowest weights (weakest connections)
+                if num_edges_to_prune > 0 and num_edges_to_prune < num_tree_edges:
+                    # Get indices of edges with lowest weights
+                    _, bottom_indices = torch.topk(edge_weights_for_pruning, num_edges_to_prune, dim=1, largest=False)
+                    
+                    # Create batch indices
+                    batch_indices = torch.arange(batch_size, device=tree.device).unsqueeze(1)
+                    
+                    # Set mask to False for edges to prune
+                    edge_mask2[batch_indices, bottom_indices] = False
+                    
+                    num_removed_per_batch = torch.full((batch_size,), num_edges_to_prune, dtype=torch.int32, device=tree.device)
+                else:
+                    num_removed_per_batch = torch.zeros(batch_size, dtype=torch.int32, device=tree.device)
                 
                 if self.verbose:
-                    print(f"Dynamic pruning: {self.prune_ratio:.2%} ratio = {num_leaves_to_prune} leaves to prune")
+                    print(f"Dynamic pruning: {self.prune_ratio:.2%} ratio = {num_edges_to_prune} edges to prune")
                     print(f"Edges kept per batch: {edge_mask2.sum(dim=1)}")
-                    print(f"Leaves pruned per batch: {num_removed_per_batch}")
+                    print(f"Edges pruned per batch: {num_removed_per_batch}")
             else:
                 # No pruning
                 if self.verbose:
