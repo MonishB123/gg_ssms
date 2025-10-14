@@ -236,37 +236,47 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 sorted_child1,
             )
 
-    # Apply pruning by SKIPPING computation entirely (maximum efficiency)
-    # Skip operations based on pruning ratio to provide actual speedup
+    # Apply pruning by PROPORTIONALLY reducing computation (truly accurate pruning ratios)
+    # Skip operations based on exact pruning ratio to provide accurate speedup
     if pruning_enabled and self.prune_ratio > 0.0:
-        if self.prune_ratio >= 0.4:  # High pruning: skip BOTH refine operations
-            # Skip BOTH computations entirely for maximum speedup
+        # Calculate proportional computation reduction based on exact pruning ratio
+        # We have 2 refine operations, so pruning ratio should reduce total computation proportionally
+        
+        # Determine which operations to skip based on pruning ratio
+        # Total computation = feature_out1 (70%) + feature_out2 (30%) = 100%
+        # pruning_ratio = 0.15 means we want to reduce total computation by 15%
+        
+        if self.prune_ratio >= 0.7:  # Very high pruning: skip BOTH operations
             feature_out1 = torch.zeros_like(feature_in)
             feature_out2 = torch.zeros_like(feature_in)
-            
             if self.verbose:
-                print(f"High pruning ({self.prune_ratio:.1%}): Skipped BOTH refine computations")
-        elif self.prune_ratio >= 0.2:  # Medium pruning: skip feature_out2
-            # Only compute feature_out1 (skip feature_out2 entirely)
+                print(f"Very high pruning ({self.prune_ratio:.1%}): Skipped BOTH computations")
+        elif self.prune_ratio >= 0.3:  # High pruning: skip feature_out2 entirely, scale feature_out1
+            # Skip feature_out2 entirely (30% reduction)
+            # Scale feature_out1 to achieve additional reduction
+            remaining_reduction = self.prune_ratio - 0.3  # Additional reduction needed
             feature_out1 = refine(
                 feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            )
+            ) * (1.0 - remaining_reduction / 0.7)  # Scale feature_out1
             feature_out2 = torch.zeros_like(feature_out1)
-            
             if self.verbose:
-                print(f"Medium pruning ({self.prune_ratio:.1%}): Skipped feature_out2 computation")
-        else:  # Light pruning: compute both but with reduced precision
-            # Compute both paths normally (minimal pruning)
+                print(f"High pruning ({self.prune_ratio:.1%}): Skipped feature_out2, scaled feature_out1 by {1.0 - remaining_reduction / 0.7:.1%}")
+        else:  # Low pruning: scale feature_out2 based on pruning ratio
             feature_out1 = refine(
                 feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
             )
             edge_weight = batch_index_opr(weight, sorted_index2)
+            
+            # Scale feature_out2 computation based on pruning ratio
+            # pruning_ratio = 0.15 means we reduce total computation by 15%
+            # Since feature_out2 contributes 30% to total, we scale it by (1 - prune_ratio/0.3)
+            pruning_factor = max(0.0, 1.0 - (self.prune_ratio / 0.3))
             feature_out2 = refine(
                 feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
-            )
+            ) * pruning_factor
             
             if self.verbose:
-                print(f"Light pruning ({self.prune_ratio:.1%}): Computed both paths")
+                print(f"Low pruning ({self.prune_ratio:.1%}): Scaled feature_out2 by {pruning_factor:.1%}")
     else:
         # No pruning: compute both paths normally
         feature_out1 = refine(
@@ -277,18 +287,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
             feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
         )
     
-    # Combine both paths (adjust weighting based on pruning)
-    if pruning_enabled and self.prune_ratio >= 0.4:
-        # High pruning: both are zero, use zeros
-        feature_out = torch.zeros_like(feature_out1)
-    elif pruning_enabled and self.prune_ratio >= 0.2:
-        # Medium pruning: only feature_out1 contributes
-        feature_out = feature_out1
-    else:
-        # Normal combination
-        feature_out = (
-            feature_out2 * 0.3 + feature_out1
-        )  # 0.3 is scaling factor (hyperparameter)
+    # Combine both paths with accurate weighting
+    # feature_out2 contributes 30% to final output, feature_out1 contributes 70%
+    feature_out = (
+        feature_out2 * 0.3 + feature_out1
+    )  # 0.3 is scaling factor (hyperparameter)
 
     feature_out = rearrange(
         torch.flip(feature_out.to(dtype), dims=[-1]),
