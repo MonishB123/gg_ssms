@@ -147,7 +147,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
 
     ### hand-build tree (vectorized)
     # Create chain tree structure: 0->1->2->...->seq_len-1
-    tree_indices = torch.arange(seq_len - 1, dtype=torch.int32, device=device)
+    tree_indices = torch.arange(seq_len - 1, dtype=torch.int64, device=device)
     tree_ = torch.stack([tree_indices, tree_indices + 1], dim=1)  # [seq_len-1, 2]
     tree = tree_.unsqueeze(0).repeat(batch_size, 1, 1)  # [batch, seq_len-1, 2]
     sorted_index1, sorted_parent1, sorted_child1 = bfs(tree, 4)
@@ -168,7 +168,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
             
             # Sequential pairs: 0->1, 1->2, ..., (L-prompt_len-1)->(L-prompt_len)
             if L - prompt_len > 0:
-                seq_indices = torch.arange(L - prompt_len, dtype=torch.int32)
+                seq_indices = torch.arange(L - prompt_len, dtype=torch.int64)
                 seq_pairs = torch.stack([seq_indices, seq_indices + 1], dim=1)
                 pairs.append(seq_pairs)
             
@@ -184,18 +184,18 @@ def tree_scanning_algorithm(self, input_states, context_len):
                         skip_pairs.append([i, i + skip])
                 
                 if skip_pairs:
-                    skip_pairs_tensor = torch.tensor(skip_pairs, dtype=torch.int32)
+                    skip_pairs_tensor = torch.tensor(skip_pairs, dtype=torch.int64)
                     pairs.append(skip_pairs_tensor)
             
             # Final connections
             if L >= 3:
-                final_pairs = torch.tensor([[L-3, L-2], [L-3, L-1], [L-2, L-1]], dtype=torch.int32)
+                final_pairs = torch.tensor([[L-3, L-2], [L-3, L-1], [L-2, L-1]], dtype=torch.int64)
                 pairs.append(final_pairs)
             
             if pairs:
                 return torch.cat(pairs, dim=0)
             else:
-                return torch.empty((0, 2), dtype=torch.int32)
+                return torch.empty((0, 2), dtype=torch.int64)
 
         if context_len > 2:
             pairs = generate_pairs_vectorized(seq_len, context_len).to(device)
