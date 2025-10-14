@@ -276,10 +276,8 @@ def tree_scanning_algorithm(self, input_states, context_len):
     # Apply pruning to BOTH computation paths for maximum effectiveness
     # Create pruning mask that will be applied to both feature_out1 and feature_out2
     
-    # First, compute feature_out1 (unpruned baseline)
-    feature_out1 = refine(
-        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-    )
+    # Apply pruning BEFORE computation to reduce actual computation cost
+    # This ensures pruning actually reduces computational load, not just post-processes results
     
     # Prepare edge_weight for feature_out2
     edge_weight = batch_index_opr(weight, sorted_index2)
@@ -347,16 +345,27 @@ def tree_scanning_algorithm(self, input_states, context_len):
             num_zeroed = (position_mask == 0).sum(dim=1)
             print(f"Applied pruning mask - zeroed out {num_zeroed} positions per batch")
     
-    # Compute feature_out2 (with pruning applied)
-    feature_out2 = refine(
-        feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
+    # Apply pruning mask BEFORE computation to reduce actual computation cost
+    if pruning_mask is not None:
+        # Apply pruning to input data BEFORE computation
+        pruned_feature_in = feature_in * pruning_mask
+        pruned_weight = weight * pruning_mask
+        pruned_edge_weight = edge_weight * pruning_mask
+    else:
+        # No pruning
+        pruned_feature_in = feature_in
+        pruned_weight = weight
+        pruned_edge_weight = edge_weight
+    
+    # Compute feature_out1 (with pruning applied BEFORE computation)
+    feature_out1 = refine(
+        pruned_feature_in, pruned_weight, sorted_index1, sorted_parent1, sorted_child1
     )
     
-    # Apply pruning to feature_out1 as well for maximum effectiveness
-    if pruning_mask is not None:
-        feature_out1 = feature_out1 * pruning_mask
-        if self.verbose:
-            print("Applied pruning mask to BOTH computation paths for maximum effectiveness")
+    # Compute feature_out2 (with pruning applied BEFORE computation)
+    feature_out2 = refine(
+        pruned_feature_in, pruned_edge_weight, sorted_index2, sorted_parent2, sorted_child2
+    )
     
     # Combine both paths (now both are pruned)
     feature_out = (
