@@ -282,10 +282,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 sorted_child1,
             )
 
-    # Compute both paths using the SAME tree structure for consistency
-    # Both paths should use the pruned tree (if pruning was applied)
+    # Compute both paths using the appropriate tree structure
+    # Use sorted_index2 (pruned tree) for feature_out2, sorted_index1 (original tree) for feature_out1
+    # This maintains the original design while ensuring pruning affects feature_out2
     feature_out1 = refine(
-        feature_in, weight, sorted_index2, sorted_parent2, sorted_child2
+        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
     )
     
     # Prepare edge_weight for feature_out2
