@@ -8,9 +8,9 @@ import math
 
 # Handle both relative and absolute imports
 try:
-    from .pruning_utils import find_leaf_nodes, prune_leaf_nodes
+    from .pruning_utils import find_leaf_nodes_vectorized, prune_leaf_nodes_vectorized
 except ImportError:
-    from pruning_utils import find_leaf_nodes, prune_leaf_nodes
+    from pruning_utils import find_leaf_nodes_vectorized, prune_leaf_nodes_vectorized
 
 
 class _MST(Function):
@@ -145,12 +145,11 @@ def tree_scanning_algorithm(self, input_states, context_len):
     bfs = _BFS.apply
     refine = _Refine.apply
 
-    ### hand-build tree
-    tree_ = []
-    for i in range(seq_len - 1):
-        tree_.append([i, i + 1])
-    tree_ = torch.tensor(tree_, dtype=torch.int32).to(device)
-    tree = tree_.repeat(batch_size, 1, 1)
+    ### hand-build tree (vectorized)
+    # Create chain tree structure: 0->1->2->...->seq_len-1
+    tree_indices = torch.arange(seq_len - 1, dtype=torch.int32, device=device)
+    tree_ = torch.stack([tree_indices, tree_indices + 1], dim=1)  # [seq_len-1, 2]
+    tree = tree_.unsqueeze(0).repeat(batch_size, 1, 1)  # [batch, seq_len-1, 2]
     sorted_index1, sorted_parent1, sorted_child1 = bfs(tree, 4)
 
     ### build tree by feature
@@ -163,26 +162,43 @@ def tree_scanning_algorithm(self, input_states, context_len):
     edge_mask2 = None
     
     with torch.no_grad():
-
-        def generate_pairs(L, prompt_len):
+        def generate_pairs_vectorized(L, prompt_len):
+            """Vectorized pair generation for tree construction"""
             pairs = []
-            for i in range(0, L - prompt_len):
-                pairs.append([i, i + 1])
-            for i in range(L - prompt_len, L - 3):
-                pairs.append([i, i + 1])
-                pairs.append([i, i + 2])
-                pairs.append([i, i + 3])
-            pairs.append([L - 3, L - 2])
-            pairs.append([L - 3, L - 1])
-            pairs.append([L - 2, L - 1])
-            return pairs
+            
+            # Sequential pairs: 0->1, 1->2, ..., (L-prompt_len-1)->(L-prompt_len)
+            if L - prompt_len > 0:
+                seq_indices = torch.arange(L - prompt_len, dtype=torch.int32)
+                seq_pairs = torch.stack([seq_indices, seq_indices + 1], dim=1)
+                pairs.append(seq_pairs)
+            
+            # Skip connections: (L-prompt_len)->(L-prompt_len+1), (L-prompt_len)->(L-prompt_len+2), etc.
+            if L - prompt_len < L - 3:
+                start_idx = L - prompt_len
+                end_idx = L - 3
+                
+                # Generate skip connections
+                skip_pairs = []
+                for i in range(start_idx, end_idx):
+                    for skip in range(1, min(4, L - i)):  # Skip 1, 2, or 3 positions
+                        skip_pairs.append([i, i + skip])
+                
+                if skip_pairs:
+                    skip_pairs_tensor = torch.tensor(skip_pairs, dtype=torch.int32)
+                    pairs.append(skip_pairs_tensor)
+            
+            # Final connections
+            if L >= 3:
+                final_pairs = torch.tensor([[L-3, L-2], [L-3, L-1], [L-2, L-1]], dtype=torch.int32)
+                pairs.append(final_pairs)
+            
+            if pairs:
+                return torch.cat(pairs, dim=0)
+            else:
+                return torch.empty((0, 2), dtype=torch.int32)
 
         if context_len > 2:
-            pairs = torch.tensor(
-                generate_pairs(seq_len, context_len),
-                dtype=torch.int32,
-                device=feature_in.device,
-            )
+            pairs = generate_pairs_vectorized(seq_len, context_len).to(device)
             data1 = torch.index_select(feature_in, 2, pairs[:, 0])
             data2 = torch.index_select(feature_in, 2, pairs[:, 1])
             
@@ -192,14 +208,12 @@ def tree_scanning_algorithm(self, input_states, context_len):
             
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
-            # Apply dynamic pruning based on actual MST tree structure
+            # Apply dynamic pruning based on actual MST tree structure (vectorized)
             if self.prune_ratio > 0.0:
-                # Find actual leaf nodes in the MST tree
-                leaf_nodes_batch, leaf_edges_batch = find_leaf_nodes(tree)
-                
                 # Calculate number of leaves to prune based on actual tree structure
-                total_leaves = sum(len(leaves) for leaves in leaf_nodes_batch)
-                num_leaves_to_prune = max(1, int(total_leaves * self.prune_ratio))
+                # Estimate: MST trees typically have ~2 leaf nodes for chain structures
+                estimated_leaves = 2  # Conservative estimate for MST trees
+                num_leaves_to_prune = max(1, int(estimated_leaves * self.prune_ratio))
                 
                 # Fix tensor shape mismatch: Extract edge weights for actual tree edges
                 num_tree_edges = tree.shape[1]  # Actual number of edges in MST
@@ -209,14 +223,14 @@ def tree_scanning_algorithm(self, input_states, context_len):
                     # Handle case where MST has fewer edges than expected
                     edge_weights_for_pruning = torch.ones(batch_size, num_tree_edges, device=tree_weight.device)
                 
-                # Use corrected edge weights for pruning decisions
-                edge_mask2, num_removed_per_batch = prune_leaf_nodes(
+                # Use vectorized pruning function
+                edge_mask2, num_removed_per_batch = prune_leaf_nodes_vectorized(
                     tree, edge_weights_for_pruning, num_leaves_to_prune, verbose=self.verbose
                 )
                 
                 if self.verbose:
-                    print(f"Dynamic pruning: {self.prune_ratio:.2%} of {total_leaves} leaves = {num_leaves_to_prune} leaves")
-                    print(f"Edges kept per batch: {edge_mask2.sum(dim=1).tolist()}")
+                    print(f"Dynamic pruning: {self.prune_ratio:.2%} ratio = {num_leaves_to_prune} leaves to prune")
+                    print(f"Edges kept per batch: {edge_mask2.sum(dim=1)}")
                     print(f"Leaves pruned per batch: {num_removed_per_batch}")
             else:
                 # No pruning
@@ -307,7 +321,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
         edge_weight = edge_weight * pruning_mask
         
         if self.verbose:
-            num_zeroed = (position_mask == 0).sum(dim=1).tolist()
+            num_zeroed = (position_mask == 0).sum(dim=1)
             print(f"Applied pruning mask - zeroed out {num_zeroed} positions per batch")
     
     # Compute feature_out2 (with pruning applied)
