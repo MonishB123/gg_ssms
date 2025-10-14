@@ -466,7 +466,7 @@ def train_dataset(args, dataset_name, dataset_config):
         args.c_out = 137
         args.seq_len = 96
         args.label_len = 48
-        args.pred_len = 96
+        # args.pred_len is already set from command line - don't override it
         args.features = "M"
         args.d_model = 32
         print(f"Solar dataset: {args.root_path}/{args.data_path}")
