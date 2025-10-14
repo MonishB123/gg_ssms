@@ -239,16 +239,14 @@ def tree_scanning_algorithm(self, input_states, context_len):
     # Apply pruning by SKIPPING computation entirely (maximum efficiency)
     # Skip operations based on pruning ratio to provide actual speedup
     if pruning_enabled and self.prune_ratio > 0.0:
-        if self.prune_ratio >= 0.4:  # High pruning: use scaled-down computation
-            # Use scaled-down computation instead of zeros for more realistic behavior
-            feature_out1 = refine(
-                feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            ) * 0.1  # Scale down by 90%
-            feature_out2 = torch.zeros_like(feature_out1)
+        if self.prune_ratio >= 0.4:  # High pruning: skip BOTH refine operations
+            # Skip BOTH computations entirely for maximum speedup
+            feature_out1 = torch.zeros_like(feature_in)
+            feature_out2 = torch.zeros_like(feature_in)
             
             if self.verbose:
-                print(f"High pruning ({self.prune_ratio:.1%}): Scaled down computation by 90%")
-        elif self.prune_ratio >= 0.1:  # Medium pruning: skip feature_out2 (lowered threshold)
+                print(f"High pruning ({self.prune_ratio:.1%}): Skipped BOTH refine computations")
+        elif self.prune_ratio >= 0.2:  # Medium pruning: skip feature_out2
             # Only compute feature_out1 (skip feature_out2 entirely)
             feature_out1 = refine(
                 feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
@@ -281,9 +279,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
     
     # Combine both paths (adjust weighting based on pruning)
     if pruning_enabled and self.prune_ratio >= 0.4:
-        # High pruning: use scaled-down computation
-        feature_out = feature_out1  # Already scaled down by 90%
-    elif pruning_enabled and self.prune_ratio >= 0.1:
+        # High pruning: both are zero, use zeros
+        feature_out = torch.zeros_like(feature_out1)
+    elif pruning_enabled and self.prune_ratio >= 0.2:
         # Medium pruning: only feature_out1 contributes
         feature_out = feature_out1
     else:
