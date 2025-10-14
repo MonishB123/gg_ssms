@@ -2,66 +2,113 @@
 
 # GraphSSM TimeSeriesForecaster Training Script
 # This script trains GraphSSM models for ETTm1, ETTh1, and Solar datasets
+# Total: 9 models (3 datasets × 3 prediction lengths)
 
 export CUDA_VISIBLE_DEVICES=0
+
+# Define prediction lengths and datasets
+PRED_LENGTHS=(96 192 336)
+DATASETS=("ETTm1" "ETTh1" "Solar")
 
 echo "🚀 Starting GraphSSM TimeSeriesForecaster Training"
 echo "=================================================="
 echo "📊 Training Configuration:"
+echo "   • Datasets: ${DATASETS[*]}"
+echo "   • Prediction Lengths: ${PRED_LENGTHS[*]}"
+echo "   • Total Models: $((${#DATASETS[@]} * ${#PRED_LENGTHS[@]}))"
 echo "   • Lookback Length: 96"
-echo "   • Forecast Length: 192" 
 echo "   • Training Epochs: 5"
 echo "   • Learning Rate: 0.001"
 echo "   • Optimizer: AdamW"
-echo "   • Pruning Ratio: 15%"
+echo "   • Pruning Ratio: 0%"
 echo "=================================================="
 
 # Change to workspace directory
 cd /workspace
 
-# Record start time
-START_TIME=$(date +%s)
+# Record overall start time
+OVERALL_START_TIME=$(date +%s)
+TOTAL_MODELS_TRAINED=0
 
-# Run training for all datasets with progress tracking
-echo "🎯 Starting training process..."
-python train_graphssm.py \
-    --task_name long_term_forecast \
-    --is_training 1 \
-    --model_id GraphSSM \
-    --model GraphSSM \
-    --train_epochs 5 \
-    --patience 3 \
-    --itr 1 \
-    --des 'GraphSSM_Exp' \
-    --loss MSE \
-    --lradj cosine \
-    --use_amp \
-    --use_gpu True \
-    --gpu 0 \
-    --d_state 16 \
-    --d_conv 4 \
-    --expand 2 \
-    --prune_ratio 0.15 \
-    --optimizer adamw \
-    --weight_decay 0.05 \
-    --learning_rate 0.001 \
-    --seq_len 96 \
-    --pred_len 192 \
-    --verbose
+# Train models for each prediction length
+for pred_len in "${PRED_LENGTHS[@]}"; do
+    echo ""
+    echo "🎯 Training models for prediction length: ${pred_len}"
+    echo "=================================================="
+    
+    # Record start time for this prediction length
+    START_TIME=$(date +%s)
+    
+    # Run training for all datasets with this prediction length
+    echo "📈 Training ETTm1, ETTh1, and Solar datasets..."
+    python train_graphssm.py \
+        --task_name long_term_forecast \
+        --is_training 1 \
+        --model_id GraphSSM \
+        --model GraphSSM \
+        --train_epochs 5 \
+        --patience 3 \
+        --itr 1 \
+        --des 'GraphSSM_Exp' \
+        --loss MSE \
+        --lradj cosine \
+        --use_amp \
+        --use_gpu True \
+        --gpu 0 \
+        --d_state 16 \
+        --d_conv 4 \
+        --expand 2 \
+        --prune_ratio 0.0 \
+        --optimizer adamw \
+        --weight_decay 0.05 \
+        --learning_rate 0.001 \
+        --seq_len 96 \
+        --pred_len ${pred_len} \
+        --verbose
+    
+    # Calculate training time for this prediction length
+    END_TIME=$(date +%s)
+    TOTAL_TIME=$((END_TIME - START_TIME))
+    HOURS=$((TOTAL_TIME / 3600))
+    MINUTES=$(((TOTAL_TIME % 3600) / 60))
+    SECONDS=$((TOTAL_TIME % 60))
+    
+    # Update total models trained
+    TOTAL_MODELS_TRAINED=$((TOTAL_MODELS_TRAINED + ${#DATASETS[@]}))
+    
+    echo ""
+    echo "✅ Training completed for prediction length ${pred_len}!"
+    echo "=================================================="
+    echo "📈 Training Summary:"
+    echo "   • Models Trained: ${#DATASETS[@]} (ETTm1, ETTh1, Solar)"
+    echo "   • Prediction Length: ${pred_len}"
+    echo "   • Time: ${HOURS}h ${MINUTES}m ${SECONDS}s"
+    echo "   • Total Models Completed: ${TOTAL_MODELS_TRAINED}/9"
+    echo "   • Checkpoints: ./checkpoints/"
+    echo "   • Test Results: ./test_results/"
+    echo "=================================================="
+done
 
-# Calculate total training time
-END_TIME=$(date +%s)
-TOTAL_TIME=$((END_TIME - START_TIME))
-HOURS=$((TOTAL_TIME / 3600))
-MINUTES=$(((TOTAL_TIME % 3600) / 60))
-SECONDS=$((TOTAL_TIME % 60))
+# Calculate overall training time
+OVERALL_END_TIME=$(date +%s)
+OVERALL_TOTAL_TIME=$((OVERALL_END_TIME - OVERALL_START_TIME))
+OVERALL_HOURS=$((OVERALL_TOTAL_TIME / 3600))
+OVERALL_MINUTES=$(((OVERALL_TOTAL_TIME % 3600) / 60))
+OVERALL_SECONDS=$((OVERALL_TOTAL_TIME % 60))
 
 echo ""
-echo "✅ Training completed successfully!"
+echo "🎉 ALL TRAINING COMPLETED SUCCESSFULLY!"
 echo "=================================================="
-echo "📈 Training Summary:"
-echo "   • Total Time: ${HOURS}h ${MINUTES}m ${SECONDS}s"
+echo "📊 Final Training Summary:"
+echo "   • Total Models Trained: ${TOTAL_MODELS_TRAINED}"
+echo "   • Datasets: ${DATASETS[*]}"
+echo "   • Prediction Lengths: ${PRED_LENGTHS[*]}"
+echo "   • Total Time: ${OVERALL_HOURS}h ${OVERALL_MINUTES}m ${OVERALL_SECONDS}s"
 echo "   • Checkpoints: ./checkpoints/"
 echo "   • Test Results: ./test_results/"
 echo "=================================================="
-
+echo "📁 Model Checkpoints Created:"
+echo "   • ETTm1_pred96, ETTm1_pred192, ETTm1_pred336"
+echo "   • ETTh1_pred96, ETTh1_pred192, ETTh1_pred336"  
+echo "   • Solar_pred96, Solar_pred192, Solar_pred336"
+echo "=================================================="
