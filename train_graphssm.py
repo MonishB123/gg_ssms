@@ -518,7 +518,7 @@ def main():
             "c_out": 7,
             "seq_len": 96,
             "label_len": 48,
-            "pred_len": 96,
+            "pred_len": args.pred_len,  # Use command line pred_len
             "d_model": 512,
             "batch_size": 32,
             "learning_rate": 0.001,
@@ -532,7 +532,7 @@ def main():
             "c_out": 7,
             "seq_len": 96,
             "label_len": 48,
-            "pred_len": 96,
+            "pred_len": args.pred_len,  # Use command line pred_len
             "d_model": 512,
             "batch_size": 32,
             "learning_rate": 0.001,
@@ -546,7 +546,7 @@ def main():
             "c_out": 137,
             "seq_len": 96,
             "label_len": 48,
-            "pred_len": 96,
+            "pred_len": args.pred_len,  # Use command line pred_len
             "d_model": 32,
             "batch_size": 16,
             "learning_rate": 0.001,
