@@ -50,7 +50,7 @@ for pred_len in "${PRED_LENGTHS[@]}"; do
         --is_training 1 \
         --model_id GraphSSM \
         --model GraphSSM \
-        --train_epochs 5 \
+        --train_epochs 10 \
         --patience 3 \
         --itr 1 \
         --des 'GraphSSM_Exp' \
