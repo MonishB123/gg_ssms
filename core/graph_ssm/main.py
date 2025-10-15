@@ -6,12 +6,6 @@ import torch.nn as nn
 from einops import rearrange, repeat
 import math
 
-# Handle both relative and absolute imports
-try:
-    from .pruning_utils import find_leaf_nodes_vectorized, prune_leaf_nodes_vectorized
-except ImportError:
-    from pruning_utils import find_leaf_nodes_vectorized, prune_leaf_nodes_vectorized
-
 
 class _MST(Function):
     @staticmethod
@@ -73,24 +67,8 @@ def norm2_distance(fm_ref, fm_tar):
 
 
 def cosine_distance(fm_ref, fm_tar):
-    weight = -torch.cosine_similarity(fm_ref, fm_tar, dim=-1)  # Fixed: use dim=-1 for consistency
+    weight = -torch.cosine_similarity(fm_ref, fm_tar, dim=1)
     return torch.exp(weight)  # with - is for min tree
-
-
-def gaussian_distance(fm_ref, fm_tar, sigma=1.5):
-    diff = fm_ref - fm_tar
-    weight = (diff * diff).sum(dim=-1) / (2 * sigma * sigma)
-    return torch.exp(-weight)  # with - is for max tree
-
-def euclidean_distance(fm_ref, fm_tar):
-    diff = fm_ref - fm_tar
-    weight = torch.sqrt((diff * diff).sum(dim=-1) + 1e-8)
-    return torch.exp(-weight)  # with - is for max tree
-
-def manhattan_distance(fm_ref, fm_tar):
-    diff = fm_ref - fm_tar
-    weight = torch.abs(diff).sum(dim=-1)
-    return torch.exp(-weight)  # with - is for max tree
 
 
 def batch_index_opr(data, index):
@@ -145,13 +123,12 @@ def tree_scanning_algorithm(self, input_states, context_len):
     bfs = _BFS.apply
     refine = _Refine.apply
 
-    ### hand-build tree (vectorized)
-    # Create chain tree structure: 0->1->2->...->seq_len-1
-    tree_indices = torch.arange(seq_len - 1, dtype=torch.int64, device=device)
-    tree_ = torch.stack([tree_indices, tree_indices + 1], dim=1)  # [seq_len-1, 2]
-    tree = tree_.unsqueeze(0).repeat(batch_size, 1, 1)  # [batch, seq_len-1, 2]
-    # Convert to int32 for CUDA kernel compatibility
-    tree = tree.int()
+    ### hand-build tree
+    tree_ = []
+    for i in range(seq_len - 1):
+        tree_.append([i, i + 1])
+    tree_ = torch.tensor(tree_, dtype=torch.int32).to(device)
+    tree = tree_.repeat(batch_size, 1, 1)
     sorted_index1, sorted_parent1, sorted_child1 = bfs(tree, 4)
 
     ### build tree by feature
@@ -159,76 +136,34 @@ def tree_scanning_algorithm(self, input_states, context_len):
         context_len = min(context_len)
     except:
         context_len = context_len
-    
-    # Initialize edge mask (will be set if pruning is used)
-    edge_mask2 = None
-    
     with torch.no_grad():
-        def generate_pairs_vectorized(L, prompt_len):
-            """Vectorized pair generation for tree construction"""
+
+        def generate_pairs(L, prompt_len):
             pairs = []
-            
-            # Sequential pairs: 0->1, 1->2, ..., (L-prompt_len-1)->(L-prompt_len)
-            if L - prompt_len > 0:
-                seq_indices = torch.arange(L - prompt_len, dtype=torch.int64)
-                seq_pairs = torch.stack([seq_indices, seq_indices + 1], dim=1)
-                pairs.append(seq_pairs)
-            
-            # Skip connections: (L-prompt_len)->(L-prompt_len+1), (L-prompt_len)->(L-prompt_len+2), etc.
-            if L - prompt_len < L - 3:
-                start_idx = L - prompt_len
-                end_idx = L - 3
-                
-                # Generate skip connections
-                skip_pairs = []
-                for i in range(start_idx, end_idx):
-                    for skip in range(1, min(4, L - i)):  # Skip 1, 2, or 3 positions
-                        skip_pairs.append([i, i + skip])
-                
-                if skip_pairs:
-                    skip_pairs_tensor = torch.tensor(skip_pairs, dtype=torch.int64)
-                    pairs.append(skip_pairs_tensor)
-            
-            # Final connections
-            if L >= 3:
-                final_pairs = torch.tensor([[L-3, L-2], [L-3, L-1], [L-2, L-1]], dtype=torch.int64)
-                pairs.append(final_pairs)
-            
-            if pairs:
-                return torch.cat(pairs, dim=0)
-            else:
-                return torch.empty((0, 2), dtype=torch.int64)
+            for i in range(0, L - prompt_len):
+                pairs.append([i, i + 1])
+            for i in range(L - prompt_len, L - 3):
+                pairs.append([i, i + 1])
+                pairs.append([i, i + 2])
+                pairs.append([i, i + 3])
+            pairs.append([L - 3, L - 2])
+            pairs.append([L - 3, L - 1])
+            pairs.append([L - 2, L - 1])
+            return pairs
 
         if context_len > 2:
-            pairs = generate_pairs_vectorized(seq_len, context_len).to(device)
-            # Convert to int32 for CUDA kernel compatibility
-            pairs = pairs.int()
+            pairs = torch.tensor(
+                generate_pairs(seq_len, context_len),
+                dtype=torch.int32,
+                device=feature_in.device,
+            )
             data1 = torch.index_select(feature_in, 2, pairs[:, 0])
             data2 = torch.index_select(feature_in, 2, pairs[:, 1])
-            
-            # MODIFIED: Use the distance function stored in self
-            tree_weight = self.distance_fn(data1, data2)
+            # import pdb;pdb.set_trace()
+            tree_weight = cosine_distance(data1, data2)
 
-            
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
-            
-            # Apply pruning by SKIPPING computation entirely (no tree manipulation)
-            # This provides maximum speedup with minimal overhead
-            if self.prune_ratio > 0.0:
-                if self.verbose:
-                    print(f"Pruning enabled: {self.prune_ratio:.1%} ratio")
-                # Mark that pruning is enabled (we'll skip computation later)
-                pruning_enabled = True
-            else:
-                if self.verbose:
-                    print(f"Pruning disabled (prune_ratio = {self.prune_ratio})")
-                pruning_enabled = False
-            
-            # BFS operates on the full tree (pruning happens via edge weights)
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
-            if self.verbose:
-                print(f"sorted_index2 shape: {sorted_index2.shape}")
-                print(f"weight shape: {weight.shape}")
         else:
             sorted_index2, sorted_parent2, sorted_child2 = (
                 sorted_index1,
@@ -236,59 +171,16 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 sorted_child1,
             )
 
-    # Apply pruning by PROPORTIONALLY reducing computation (truly accurate pruning ratios)
-    # Skip operations based on exact pruning ratio to provide accurate speedup
-    if pruning_enabled and self.prune_ratio > 0.0:
-        # Calculate proportional computation reduction based on exact pruning ratio
-        # We have 2 refine operations, so pruning ratio should reduce total computation proportionally
-        
-        # Determine which operations to skip based on pruning ratio
-        # Total computation = feature_out1 (70%) + feature_out2 (30%) = 100%
-        # pruning_ratio = 0.15 means we want to reduce total computation by 15%
-        
-        if self.prune_ratio >= 0.7:  # Very high pruning: skip BOTH operations
-            feature_out1 = torch.zeros_like(feature_in)
-            feature_out2 = torch.zeros_like(feature_in)
-            if self.verbose:
-                print(f"Very high pruning ({self.prune_ratio:.1%}): Skipped BOTH computations")
-        elif self.prune_ratio >= 0.3:  # High pruning: skip feature_out2 entirely, scale feature_out1
-            # Skip feature_out2 entirely (30% reduction)
-            # Scale feature_out1 to achieve additional reduction
-            remaining_reduction = self.prune_ratio - 0.3  # Additional reduction needed
-            feature_out1 = refine(
-                feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            ) * (1.0 - remaining_reduction / 0.7)  # Scale feature_out1
-            feature_out2 = torch.zeros_like(feature_out1)
-            if self.verbose:
-                print(f"High pruning ({self.prune_ratio:.1%}): Skipped feature_out2, scaled feature_out1 by {1.0 - remaining_reduction / 0.7:.1%}")
-        else:  # Low pruning: scale feature_out2 based on pruning ratio
-            feature_out1 = refine(
-                feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            )
-            edge_weight = batch_index_opr(weight, sorted_index2)
-            
-            # Scale feature_out2 computation based on pruning ratio
-            # pruning_ratio = 0.15 means we reduce total computation by 15%
-            # Since feature_out2 contributes 30% to total, we scale it by (1 - prune_ratio/0.3)
-            pruning_factor = max(0.0, 1.0 - (self.prune_ratio / 0.3))
-            feature_out2 = refine(
-                feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
-            ) * pruning_factor
-            
-            if self.verbose:
-                print(f"Low pruning ({self.prune_ratio:.1%}): Scaled feature_out2 by {pruning_factor:.1%}")
-    else:
-        # No pruning: compute both paths normally
-        feature_out1 = refine(
-            feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-        )
-        edge_weight = batch_index_opr(weight, sorted_index2)
-        feature_out2 = refine(
-            feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
-        )
-    
-    # Combine both paths with accurate weighting
-    # feature_out2 contributes 30% to final output, feature_out1 contributes 70%
+        # import pdb;pdb.set_trace()
+    # import pdb;pdb.set_trace()
+    feature_out1 = refine(
+        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+    )
+    # import pdb;pdb.set_trace()
+    edge_weight = batch_index_opr(weight, sorted_index2)
+    feature_out2 = refine(
+        feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
+    )
     feature_out = (
         feature_out2 * 0.3 + feature_out1
     )  # 0.3 is scaling factor (hyperparameter)
@@ -332,16 +224,11 @@ class GraphSSM(nn.Module):
         layer_idx=None,
         device=None,
         dtype=None,
-        distance_metric='cosine',  # ADDED: distance metric parameter
-        prune_ratio=0.15,  # ratio of leaf nodes to prune (0.0 = no pruning, 0.5 = prune 15% of leaves)
-        verbose=False,  # whether to print debug information
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
         super().__init__()
         self.d_model = d_model
         self.d_state = d_state
-        self.prune_ratio = prune_ratio  # Store pruning ratio
-        self.verbose = verbose  # Store verbose flag
         self.d_conv = d_conv
         self.expand = expand
         self.d_inner = int(self.expand * self.d_model)
@@ -413,25 +300,6 @@ class GraphSSM(nn.Module):
             self.d_inner, self.d_model, bias=bias, **factory_kwargs
         )
 
-        # ADDED: Distance metric selection
-        self.distance_metric = distance_metric
-        self.distance_functions = {
-            'cosine': cosine_distance,
-            'euclidean': euclidean_distance,
-            'gaussian': gaussian_distance,
-            'manhattan': manhattan_distance,
-            'norm2': norm2_distance,
-        }
-        
-        # Store the selected distance function
-        if distance_metric not in self.distance_functions:
-            raise ValueError(f"Unknown distance metric: {distance_metric}. "
-                           f"Choose from: {list(self.distance_functions.keys())}")
-        self.distance_fn = self.distance_functions[distance_metric]
-        
-        # Dynamic pruning will be computed during forward pass based on actual tree structure
-        # No pre-computation needed since pruning depends on actual MST results
-
     def forward(self, input_states, context_len):
         return tree_scanning_algorithm(self, input_states, context_len)
 
@@ -446,9 +314,12 @@ if __name__ == "__main__":
     # Create random input tensor
     x = torch.randn(batch_size, seq_len, d_model)
 
-    # Instantiate the GraphSSM layer with different distance metrics
-    print("Testing different distance metrics:")
-    for metric in ['cosine', 'euclidean', 'gaussian', 'manhattan', 'norm2']:
-        model = GraphSSM(d_model=d_model, distance_metric=metric)
+    # Instantiate the GraphSSM layer
+    model = GraphSSM(d_model=d_model)
+
+    # Forward pass
     output = model(x, context_len)
-    print(f"  {metric:12s}: Input {x.shape} -> Output {output.shape}")
+
+    print("Input shape:", x.shape)  # (B, L, d_model)
+    print("Output shape:", output.shape)  # (B, L, d_model)
+    # Now 'output' contains the contextualized representation
