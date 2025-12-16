@@ -225,8 +225,8 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 num_leaves_to_prune = max(1, int(num_leaf_nodes_estimate * self.prune_ratio))
                 
                 # Apply pruning to the tree
-                # Expand tree_weight to match batch dimension for pruning function
-                tree_weight_expanded = tree_weight.unsqueeze(0).repeat(batch_size, 1)  # [batch, num_edges]
+                # tree_weight is already [batch, num_edges]
+                tree_weight_expanded = tree_weight
                 
                 # Prune leaf nodes based on pruning mode
                 edge_mask, num_removed = prune_leaf_nodes_vectorized(
@@ -240,11 +240,10 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 # Apply edge mask to tree by zeroing out pruned edges
                 # We'll mask the tree by modifying edge weights for pruned edges
                 # This way BFS will naturally skip pruned edges
-                tree_weight_masked = tree_weight_expanded.clone()
                 tree_weight_masked = torch.where(
-                    edge_mask.unsqueeze(-1).expand_as(tree_weight_masked),
-                    tree_weight_masked,
-                    torch.tensor(float('-inf'), device=device, dtype=tree_weight_masked.dtype)
+                    edge_mask,
+                    tree_weight_expanded,
+                    torch.tensor(float('-inf'), device=device, dtype=tree_weight_expanded.dtype)
                 )
                 
                 if self.verbose:
@@ -252,7 +251,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
             else:
                 if self.verbose:
                     print(f"Pruning disabled (prune_ratio = {self.prune_ratio})")
-                tree_weight_masked = tree_weight.unsqueeze(0).repeat(batch_size, 1)
+                tree_weight_masked = tree_weight
             
             # BFS operates on the tree (pruned edges are effectively skipped due to -inf weights)
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
