@@ -225,25 +225,16 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 num_leaves_to_prune = max(1, int(num_leaf_nodes_estimate * self.prune_ratio))
                 
                 # Apply pruning to the tree
-                # tree_weight is already [batch, num_edges]
-                tree_weight_expanded = tree_weight
-                
-                # Prune leaf nodes based on pruning mode
+                # Note: tree_weight is from all pairs, but tree has seq_len-1 edges after MST
+                # For pruning, we pass None as edge_weights - the pruning function will use uniform weights
+                # For ordered mode, this means pruning will be based on edge order rather than similarity
+                # For unordered mode, it will randomly prune
                 edge_mask, num_removed = prune_leaf_nodes_vectorized(
                     tree, 
-                    tree_weight_expanded, 
-                    num_leaves_to_prune, 
+                    edge_weights=None,  # Pass None since we don't have edge weights for MST edges
+                    num_leaves_to_prune=num_leaves_to_prune, 
                     pruning_mode=self.pruning_mode,
                     verbose=self.verbose
-                )
-                
-                # Apply edge mask to tree by zeroing out pruned edges
-                # We'll mask the tree by modifying edge weights for pruned edges
-                # This way BFS will naturally skip pruned edges
-                tree_weight_masked = torch.where(
-                    edge_mask,
-                    tree_weight_expanded,
-                    torch.tensor(float('-inf'), device=device, dtype=tree_weight_expanded.dtype)
                 )
                 
                 if self.verbose:
@@ -251,9 +242,9 @@ def tree_scanning_algorithm(self, input_states, context_len):
             else:
                 if self.verbose:
                     print(f"Pruning disabled (prune_ratio = {self.prune_ratio})")
-                tree_weight_masked = tree_weight
             
-            # BFS operates on the tree (pruned edges are effectively skipped due to -inf weights)
+            # BFS operates on the tree
+            # Note: Pruning is handled in the computation scaling section below, not by modifying the tree structure
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             if self.verbose:
                 print(f"sorted_index2 shape: {sorted_index2.shape}")
