@@ -212,19 +212,49 @@ def tree_scanning_algorithm(self, input_states, context_len):
             
             tree = mst(pairs.repeat(batch_size, 1, 1), tree_weight, seq_len)
             
-            # Apply pruning by SKIPPING computation entirely (no tree manipulation)
-            # This provides maximum speedup with minimal overhead
+            # Apply pruning by actually pruning nodes from the tree
+            pruning_enabled = False
             if self.prune_ratio > 0.0:
                 if self.verbose:
-                    print(f"Pruning enabled: {self.prune_ratio:.1%} ratio")
-                # Mark that pruning is enabled (we'll skip computation later)
+                    print(f"Pruning enabled: {self.prune_ratio:.1%} ratio ({self.pruning_mode} mode)")
                 pruning_enabled = True
+                
+                # Calculate number of leaf nodes to prune
+                # Estimate number of leaf nodes (typically ~context_len leaf nodes in a tree)
+                num_leaf_nodes_estimate = max(1, int(context_len * 0.5))  # Rough estimate
+                num_leaves_to_prune = max(1, int(num_leaf_nodes_estimate * self.prune_ratio))
+                
+                # Apply pruning to the tree
+                # Expand tree_weight to match batch dimension for pruning function
+                tree_weight_expanded = tree_weight.unsqueeze(0).repeat(batch_size, 1)  # [batch, num_edges]
+                
+                # Prune leaf nodes based on pruning mode
+                edge_mask, num_removed = prune_leaf_nodes_vectorized(
+                    tree, 
+                    tree_weight_expanded, 
+                    num_leaves_to_prune, 
+                    pruning_mode=self.pruning_mode,
+                    verbose=self.verbose
+                )
+                
+                # Apply edge mask to tree by zeroing out pruned edges
+                # We'll mask the tree by modifying edge weights for pruned edges
+                # This way BFS will naturally skip pruned edges
+                tree_weight_masked = tree_weight_expanded.clone()
+                tree_weight_masked = torch.where(
+                    edge_mask.unsqueeze(-1).expand_as(tree_weight_masked),
+                    tree_weight_masked,
+                    torch.tensor(float('-inf'), device=device, dtype=tree_weight_masked.dtype)
+                )
+                
+                if self.verbose:
+                    print(f"Pruned {num_removed[0].item()} edges from tree")
             else:
                 if self.verbose:
                     print(f"Pruning disabled (prune_ratio = {self.prune_ratio})")
-                pruning_enabled = False
+                tree_weight_masked = tree_weight.unsqueeze(0).repeat(batch_size, 1)
             
-            # BFS operates on the full tree (pruning happens via edge weights)
+            # BFS operates on the tree (pruned edges are effectively skipped due to -inf weights)
             sorted_index2, sorted_parent2, sorted_child2 = bfs(tree, context_len)
             if self.verbose:
                 print(f"sorted_index2 shape: {sorted_index2.shape}")
@@ -235,6 +265,7 @@ def tree_scanning_algorithm(self, input_states, context_len):
                 sorted_parent1,
                 sorted_child1,
             )
+            pruning_enabled = False
 
     # Apply pruning by PROPORTIONALLY reducing computation (truly accurate pruning ratios)
     # Skip operations based on exact pruning ratio to provide accurate speedup
@@ -242,41 +273,101 @@ def tree_scanning_algorithm(self, input_states, context_len):
         # Calculate proportional computation reduction based on exact pruning ratio
         # We have 2 refine operations, so pruning ratio should reduce total computation proportionally
         
-        # Determine which operations to skip based on pruning ratio
+        # Determine which operations to skip based on pruning ratio and mode
         # Total computation = feature_out1 (70%) + feature_out2 (30%) = 100%
         # pruning_ratio = 0.15 means we want to reduce total computation by 15%
         
-        if self.prune_ratio >= 0.7:  # Very high pruning: skip BOTH operations
-            feature_out1 = torch.zeros_like(feature_in)
-            feature_out2 = torch.zeros_like(feature_in)
-            if self.verbose:
-                print(f"Very high pruning ({self.prune_ratio:.1%}): Skipped BOTH computations")
-        elif self.prune_ratio >= 0.3:  # High pruning: skip feature_out2 entirely, scale feature_out1
-            # Skip feature_out2 entirely (30% reduction)
-            # Scale feature_out1 to achieve additional reduction
-            remaining_reduction = self.prune_ratio - 0.3  # Additional reduction needed
-            feature_out1 = refine(
-                feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            ) * (1.0 - remaining_reduction / 0.7)  # Scale feature_out1
-            feature_out2 = torch.zeros_like(feature_out1)
-            if self.verbose:
-                print(f"High pruning ({self.prune_ratio:.1%}): Skipped feature_out2, scaled feature_out1 by {1.0 - remaining_reduction / 0.7:.1%}")
-        else:  # Low pruning: scale feature_out2 based on pruning ratio
-            feature_out1 = refine(
-                feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
-            )
-            edge_weight = batch_index_opr(weight, sorted_index2)
+        # For unordered mode, randomly decide which computations to skip
+        # For ordered mode, skip based on similarity (deterministic)
+        if self.pruning_mode == 'unordered':
+            # Random pruning: randomly decide which operations to scale/skip
+            # Use a random seed based on input to ensure reproducibility within a batch
+            # but randomness across different inputs
+            torch.manual_seed(int(torch.sum(feature_in).item() * 1000) % 2**31)
             
-            # Scale feature_out2 computation based on pruning ratio
-            # pruning_ratio = 0.15 means we reduce total computation by 15%
-            # Since feature_out2 contributes 30% to total, we scale it by (1 - prune_ratio/0.3)
-            pruning_factor = max(0.0, 1.0 - (self.prune_ratio / 0.3))
-            feature_out2 = refine(
-                feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
-            ) * pruning_factor
+            # Randomly decide pruning strategy
+            rand_val = torch.rand(1, device=device).item()
             
-            if self.verbose:
-                print(f"Low pruning ({self.prune_ratio:.1%}): Scaled feature_out2 by {pruning_factor:.1%}")
+            if self.prune_ratio >= 0.7:  # Very high pruning: skip BOTH operations
+                feature_out1 = torch.zeros_like(feature_in)
+                feature_out2 = torch.zeros_like(feature_in)
+                if self.verbose:
+                    print(f"Very high pruning ({self.prune_ratio:.1%}): Skipped BOTH computations (unordered)")
+            elif self.prune_ratio >= 0.3:  # High pruning: randomly skip feature_out2 or scale both
+                if rand_val < 0.5:  # 50% chance to skip feature_out2 entirely
+                    remaining_reduction = self.prune_ratio - 0.3
+                    feature_out1 = refine(
+                        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+                    ) * (1.0 - remaining_reduction / 0.7)
+                    feature_out2 = torch.zeros_like(feature_out1)
+                    if self.verbose:
+                        print(f"High pruning ({self.prune_ratio:.1%}): Randomly skipped feature_out2, scaled feature_out1 (unordered)")
+                else:  # Scale both randomly
+                    scale_factor = 1.0 - self.prune_ratio
+                    feature_out1 = refine(
+                        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+                    ) * scale_factor
+                    edge_weight = batch_index_opr(weight, sorted_index2)
+                    feature_out2 = refine(
+                        feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
+                    ) * scale_factor
+                    if self.verbose:
+                        print(f"High pruning ({self.prune_ratio:.1%}): Randomly scaled both outputs by {scale_factor:.1%} (unordered)")
+            else:  # Low pruning: randomly scale feature_out2 or feature_out1
+                if rand_val < 0.5:  # 50% chance to scale feature_out2
+                    feature_out1 = refine(
+                        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+                    )
+                    edge_weight = batch_index_opr(weight, sorted_index2)
+                    pruning_factor = max(0.0, 1.0 - (self.prune_ratio / 0.3))
+                    feature_out2 = refine(
+                        feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
+                    ) * pruning_factor
+                    if self.verbose:
+                        print(f"Low pruning ({self.prune_ratio:.1%}): Randomly scaled feature_out2 by {pruning_factor:.1%} (unordered)")
+                else:  # Scale feature_out1 instead
+                    pruning_factor = max(0.0, 1.0 - (self.prune_ratio / 0.7))
+                    feature_out1 = refine(
+                        feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+                    ) * pruning_factor
+                    edge_weight = batch_index_opr(weight, sorted_index2)
+                    feature_out2 = refine(
+                        feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
+                    )
+                    if self.verbose:
+                        print(f"Low pruning ({self.prune_ratio:.1%}): Randomly scaled feature_out1 by {pruning_factor:.1%} (unordered)")
+        else:  # 'ordered' mode - similarity-based pruning (deterministic)
+            if self.prune_ratio >= 0.7:  # Very high pruning: skip BOTH operations
+                feature_out1 = torch.zeros_like(feature_in)
+                feature_out2 = torch.zeros_like(feature_in)
+                if self.verbose:
+                    print(f"Very high pruning ({self.prune_ratio:.1%}): Skipped BOTH computations (ordered)")
+            elif self.prune_ratio >= 0.3:  # High pruning: skip feature_out2 entirely, scale feature_out1
+                # Skip feature_out2 entirely (30% reduction)
+                # Scale feature_out1 to achieve additional reduction
+                remaining_reduction = self.prune_ratio - 0.3  # Additional reduction needed
+                feature_out1 = refine(
+                    feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+                ) * (1.0 - remaining_reduction / 0.7)  # Scale feature_out1
+                feature_out2 = torch.zeros_like(feature_out1)
+                if self.verbose:
+                    print(f"High pruning ({self.prune_ratio:.1%}): Skipped feature_out2, scaled feature_out1 by {1.0 - remaining_reduction / 0.7:.1%} (ordered)")
+            else:  # Low pruning: scale feature_out2 based on pruning ratio
+                feature_out1 = refine(
+                    feature_in, weight, sorted_index1, sorted_parent1, sorted_child1
+                )
+                edge_weight = batch_index_opr(weight, sorted_index2)
+                
+                # Scale feature_out2 computation based on pruning ratio
+                # pruning_ratio = 0.15 means we reduce total computation by 15%
+                # Since feature_out2 contributes 30% to total, we scale it by (1 - prune_ratio/0.3)
+                pruning_factor = max(0.0, 1.0 - (self.prune_ratio / 0.3))
+                feature_out2 = refine(
+                    feature_in, edge_weight, sorted_index2, sorted_parent2, sorted_child2
+                ) * pruning_factor
+                
+                if self.verbose:
+                    print(f"Low pruning ({self.prune_ratio:.1%}): Scaled feature_out2 by {pruning_factor:.1%} (ordered)")
     else:
         # No pruning: compute both paths normally
         feature_out1 = refine(
@@ -334,6 +425,7 @@ class GraphSSM(nn.Module):
         dtype=None,
         distance_metric='cosine',  # ADDED: distance metric parameter
         prune_ratio=0.15,  # ratio of leaf nodes to prune (0.0 = no pruning, 0.5 = prune 15% of leaves)
+        pruning_mode='ordered',  # 'ordered' for similarity-based pruning, 'unordered' for random pruning
         verbose=False,  # whether to print debug information
     ):
         factory_kwargs = {"device": device, "dtype": dtype}
@@ -341,6 +433,7 @@ class GraphSSM(nn.Module):
         self.d_model = d_model
         self.d_state = d_state
         self.prune_ratio = prune_ratio  # Store pruning ratio
+        self.pruning_mode = pruning_mode  # Store pruning mode ('ordered' or 'unordered')
         self.verbose = verbose  # Store verbose flag
         self.d_conv = d_conv
         self.expand = expand

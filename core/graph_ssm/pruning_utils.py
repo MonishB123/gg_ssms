@@ -55,16 +55,16 @@ def find_leaf_nodes_vectorized(tree):
     return leaf_nodes_mask, leaf_edges_mask
 
 
-def prune_leaf_nodes_vectorized(tree, edge_weights=None, num_leaves_to_prune=1, verbose=False):
+def prune_leaf_nodes_vectorized(tree, edge_weights=None, num_leaves_to_prune=1, pruning_mode='ordered', verbose=False):
     """
     Create a mask for edges to prune based on leaf nodes using fully vectorized operations.
-    
-    Prunes N leaf nodes with the HIGHEST edge weights (strongest connections).
     
     Args:
         tree: Tensor [batch, num_edges, 2]
         edge_weights: Optional tensor [batch, num_edges] of edge weights from MST
         num_leaves_to_prune: Number of leaf nodes to remove
+        pruning_mode: 'ordered' to prune most similar nodes (highest weights), 
+                     'unordered' to prune randomly
         verbose: Whether to print debug information
     
     Returns:
@@ -93,45 +93,67 @@ def prune_leaf_nodes_vectorized(tree, edge_weights=None, num_leaves_to_prune=1, 
         return edge_mask, torch.zeros(batch_size, dtype=torch.int32, device=device)
     
     # For batches with leaf edges, perform pruning
-    if edge_weights is not None:
-        # Use provided edge weights
-        pruning_weights = edge_weights.clone()
-    else:
-        # Use uniform weights if not provided
-        pruning_weights = torch.ones_like(leaf_edges_mask, dtype=torch.float32)
-    
-    # Mask weights to only consider leaf edges
-    leaf_weights = pruning_weights * leaf_edges_mask.float()
-    
-    # Set non-leaf edge weights to -inf so they won't be selected
-    leaf_weights = torch.where(leaf_edges_mask, leaf_weights, torch.tensor(float('-inf'), device=device))
-    
-    # Find top-k leaf edges to prune (vectorized across batches)
-    # We need to handle variable number of leaf edges per batch
-    max_leaf_edges = num_leaf_edges_per_batch.max().item()
-    
-    if max_leaf_edges > 0:
-        # Get top-k leaf edges for pruning
-        _, top_indices = torch.topk(leaf_weights, min(num_leaves_to_prune, max_leaf_edges), dim=1)
+    if pruning_mode == 'unordered':
+        # Random pruning: randomly select leaf edges to prune
+        prune_mask = torch.ones_like(edge_mask)
+        batch_indices = torch.arange(batch_size, device=device)
         
-        # Create pruning mask for top-k edges
-        prune_mask = torch.zeros_like(edge_mask)
-        batch_indices = torch.arange(batch_size, device=device).unsqueeze(1)
-        
-        # Only prune if we have enough leaf edges
-        for k in range(min(num_leaves_to_prune, max_leaf_edges)):
-            # Get the k-th highest weight leaf edge for each batch
-            edge_indices = top_indices[:, k]  # [batch]
-            
-            # Only prune if this batch has enough leaf edges
-            valid_for_pruning = (num_leaf_edges_per_batch > k) & valid_batches
-            
-            if valid_for_pruning.any():
-                # Set mask to False (prune) for selected edges
-                prune_mask[batch_indices[valid_for_pruning], edge_indices[valid_for_pruning]] = False
+        for b in range(batch_size):
+            if num_leaf_edges_per_batch[b] > 0:
+                # Get indices of leaf edges for this batch
+                leaf_edge_indices = torch.where(leaf_edges_mask[b])[0]
+                num_available = len(leaf_edge_indices)
+                num_to_prune = min(num_leaves_to_prune, num_available)
+                
+                if num_to_prune > 0:
+                    # Randomly select edges to prune
+                    perm = torch.randperm(num_available, device=device)
+                    edges_to_prune = leaf_edge_indices[perm[:num_to_prune]]
+                    prune_mask[b, edges_to_prune] = False
         
         # Apply pruning mask
         edge_mask = edge_mask & prune_mask
+        
+    else:  # 'ordered' mode - prune based on similarity (highest weights)
+        if edge_weights is not None:
+            # Use provided edge weights
+            pruning_weights = edge_weights.clone()
+        else:
+            # Use uniform weights if not provided
+            pruning_weights = torch.ones_like(leaf_edges_mask, dtype=torch.float32)
+        
+        # Mask weights to only consider leaf edges
+        leaf_weights = pruning_weights * leaf_edges_mask.float()
+        
+        # Set non-leaf edge weights to -inf so they won't be selected
+        leaf_weights = torch.where(leaf_edges_mask, leaf_weights, torch.tensor(float('-inf'), device=device))
+        
+        # Find top-k leaf edges to prune (vectorized across batches)
+        # We need to handle variable number of leaf edges per batch
+        max_leaf_edges = num_leaf_edges_per_batch.max().item()
+        
+        if max_leaf_edges > 0:
+            # Get top-k leaf edges for pruning
+            _, top_indices = torch.topk(leaf_weights, min(num_leaves_to_prune, max_leaf_edges), dim=1)
+            
+            # Create pruning mask for top-k edges
+            prune_mask = torch.ones_like(edge_mask)
+            batch_indices = torch.arange(batch_size, device=device).unsqueeze(1)
+            
+            # Only prune if we have enough leaf edges
+            for k in range(min(num_leaves_to_prune, max_leaf_edges)):
+                # Get the k-th highest weight leaf edge for each batch
+                edge_indices = top_indices[:, k]  # [batch]
+                
+                # Only prune if this batch has enough leaf edges
+                valid_for_pruning = (num_leaf_edges_per_batch > k) & valid_batches
+                
+                if valid_for_pruning.any():
+                    # Set mask to False (prune) for selected edges
+                    prune_mask[batch_indices[valid_for_pruning], edge_indices[valid_for_pruning]] = False
+            
+            # Apply pruning mask
+            edge_mask = edge_mask & prune_mask
     
     # Calculate number of edges removed per batch
     num_removed_per_batch = (leaf_edges_mask & ~edge_mask).sum(dim=1)
@@ -140,7 +162,7 @@ def prune_leaf_nodes_vectorized(tree, edge_weights=None, num_leaves_to_prune=1, 
         # Print debug info (only for first batch to avoid spam)
         if batch_size > 0:
             print(f"   Batch 0: Found {num_leaf_edges_per_batch[0].item()} leaf edges")
-            print(f"   Pruned {num_removed_per_batch[0].item()} edges")
+            print(f"   Pruned {num_removed_per_batch[0].item()} edges ({pruning_mode} mode)")
     
     return edge_mask, num_removed_per_batch
 
@@ -166,12 +188,12 @@ def find_leaf_nodes(tree):
     return leaf_nodes_batch, leaf_edges_batch
 
 
-def prune_leaf_nodes(tree, edge_weights=None, num_leaves_to_prune=1, verbose=False):
+def prune_leaf_nodes(tree, edge_weights=None, num_leaves_to_prune=1, pruning_mode='ordered', verbose=False):
     """
     DEPRECATED: Use prune_leaf_nodes_vectorized instead for better performance.
     """
     edge_mask, num_removed_per_batch = prune_leaf_nodes_vectorized(
-        tree, edge_weights, num_leaves_to_prune, verbose
+        tree, edge_weights, num_leaves_to_prune, pruning_mode, verbose
     )
     
     # Convert to old format for backward compatibility
